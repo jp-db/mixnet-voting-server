@@ -26,6 +26,8 @@ RUN test -n "$PACKAGE" && uv sync --frozen --no-dev --package "$PACKAGE"
 
 ENV PATH=/src/.venv/bin:$PATH \
     PYTHONUNBUFFERED=1
-RUN useradd --system --home /data voting && mkdir -p /data && chown voting /data
+# Volumes mount on these; Docker copies their ownership into a new named volume.
+RUN useradd --system --home /data voting \
+ && mkdir -p /data/blobs /data/node && chown -R voting /data
 USER voting
 WORKDIR /data

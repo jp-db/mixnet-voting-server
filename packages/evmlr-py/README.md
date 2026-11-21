@@ -8,15 +8,15 @@ import hashlib
 import evmlr
 
 # Each mixing server, on its own machine
-keys = [evmlr.keygen() for _ in range(3)]            # publish .public_key, keep .keypair
+keys = [evmlr.keygen() for _ in range(3)]  # publish .public_key, keep .keypair
 
 # Election authority: public keys in, public parameters out
 election_id = hashlib.sha256(b"Board election 2026").digest()
 pp = evmlr.params(election_id, [k.public_key for k in keys])
 
 # Ballot box, for each ballot received from a browser
-voter_id = evmlr.check_ballot(pp, ballot)            # raises EvmlrError if invalid
-assert voter_id == authenticated_voters_alias        # the binding is the caller's job
+voter_id = evmlr.check_ballot(pp, ballot)  # raises EvmlrError if invalid
+assert voter_id == authenticated_voters_alias  # the binding is the caller's job
 
 # Counting: server j, in turn, with its own key only
 batch, records = evmlr.first_batch(pp, board), []

@@ -40,6 +40,14 @@ make wasm            # once, for the frontend: WASM deps + module
 make frontend        # http://localhost:5173
 ```
 
+A mixnet node refuses to start without its secrets. For development:
+
+```sh
+export MIXNET_NODE_API_TOKEN=$(python3 -c "import secrets; print(secrets.token_urlsafe(48))")
+export MIXNET_NODE_KEY_ENCRYPTION_KEY=$(python3 -c "import base64, os; print(base64.b64encode(os.urandom(32)).decode())")
+make dev-mixnet-node  # http://localhost:8100/docs
+```
+
 The Python environment is a [uv workspace](https://docs.astral.sh/uv/concepts/projects/workspaces/):
 one `.venv` at the root, with every package installed in editable mode.
 `evmlr-py`'s extension links `libevmlr.so` from the submodule, so after

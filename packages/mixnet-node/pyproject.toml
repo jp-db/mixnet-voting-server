@@ -13,6 +13,8 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
     "pydantic-settings>=2.6",
+    "python-multipart>=0.0.20",
+    "cryptography>=44",
 ]
 
 [tool.uv.sources]

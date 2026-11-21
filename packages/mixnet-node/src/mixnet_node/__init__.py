@@ -1,16 +1,12 @@
 """A mixnet node: one of the k mixing servers of an election.
 
-Each node is meant to be run by a different organisation. It generates and
-keeps its own secret key (never sent to the ballot box), and for each
-election it:
-
-1. ``POST /elections/{id}/keygen``: generates a key pair, stores it
-   encrypted at rest, returns the public key;
-2. ``POST /elections/{id}/mix``: takes its input batch (and, for j > 0,
-   server j-1's mix record), runs :func:`evmlr.mix`, and returns the output
-   batch and its own mix record.
+Each node is meant to be run by a different organisation. Per election it
+generates and keeps its own key pair (:mod:`mixnet_node.keystore`; only the
+public key leaves the node), and when counting it decrypts its layer of the
+ballots, drops those whose proofs fail, shuffles the rest and proves the
+shuffle (:mod:`mixnet_node.jobs`). The HTTP API is in :mod:`mixnet_node.api`.
 
 It never sees voter identities beyond the numeric aliases in the first
-batch. Requests from the ballot box are authenticated (mTLS or signed
-requests, see :mod:`voting_common`).
+batch. Requests from the ballot box carry a bearer token; across
+organisations, put mTLS in front as well.
 """

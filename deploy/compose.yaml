@@ -66,22 +66,34 @@ services:
 
   mixnet-node-0:
     <<: *mixnet-node
-    environment: { MIXNET_NODE_NODE_NAME: mixnet-node-0, MIXNET_NODE_KEY_DIR: /data/keys }
-    volumes: [keys-0:/data/keys]
+    environment:
+      MIXNET_NODE_NODE_NAME: mixnet-node-0
+      MIXNET_NODE_DATA_DIR: /data/node
+      MIXNET_NODE_API_TOKEN: ${MIXNET_NODE_0_API_TOKEN:?set MIXNET_NODE_0_API_TOKEN}
+      MIXNET_NODE_KEY_ENCRYPTION_KEY: ${MIXNET_NODE_0_KEK:?set MIXNET_NODE_0_KEK}
+    volumes: [node-0:/data/node]
 
   mixnet-node-1:
     <<: *mixnet-node
-    environment: { MIXNET_NODE_NODE_NAME: mixnet-node-1, MIXNET_NODE_KEY_DIR: /data/keys }
-    volumes: [keys-1:/data/keys]
+    environment:
+      MIXNET_NODE_NODE_NAME: mixnet-node-1
+      MIXNET_NODE_DATA_DIR: /data/node
+      MIXNET_NODE_API_TOKEN: ${MIXNET_NODE_1_API_TOKEN:?set MIXNET_NODE_1_API_TOKEN}
+      MIXNET_NODE_KEY_ENCRYPTION_KEY: ${MIXNET_NODE_1_KEK:?set MIXNET_NODE_1_KEK}
+    volumes: [node-1:/data/node]
 
   mixnet-node-2:
     <<: *mixnet-node
-    environment: { MIXNET_NODE_NODE_NAME: mixnet-node-2, MIXNET_NODE_KEY_DIR: /data/keys }
-    volumes: [keys-2:/data/keys]
+    environment:
+      MIXNET_NODE_NODE_NAME: mixnet-node-2
+      MIXNET_NODE_DATA_DIR: /data/node
+      MIXNET_NODE_API_TOKEN: ${MIXNET_NODE_2_API_TOKEN:?set MIXNET_NODE_2_API_TOKEN}
+      MIXNET_NODE_KEY_ENCRYPTION_KEY: ${MIXNET_NODE_2_KEK:?set MIXNET_NODE_2_KEK}
+    volumes: [node-2:/data/node]
 
 volumes:
   postgres:
   blobs:
-  keys-0:
-  keys-1:
-  keys-2:
+  node-0:
+  node-1:
+  node-2:
