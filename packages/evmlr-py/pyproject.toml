@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=75", "cffi>=1.17"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "evmlr"
+version = "0.1.0"
+description = "Python bindings (cffi) for the evmlr-shuffle verifiable mixnet"
+requires-python = ">=3.12"
+dependencies = ["cffi>=1.17"]
+license = "Apache-2.0"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+evmlr = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

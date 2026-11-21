@@ -1,0 +1,4 @@
+[submodule "evmlr-shuffle"]
+	path = evmlr-shuffle
+	url = https://github.com/jp-db/evmlr-shuffle.git
+	branch = serialization

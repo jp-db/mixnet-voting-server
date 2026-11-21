@@ -1,0 +1,13 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "voting-common"
+version = "0.1.0"
+description = "Code shared by the ballot box and the mixnet nodes"
+requires-python = ">=3.12"
+dependencies = ["pydantic>=2.9"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/voting_common"]

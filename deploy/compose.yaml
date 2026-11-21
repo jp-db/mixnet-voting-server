@@ -1,0 +1,87 @@
+# Development stack: `docker compose -f deploy/compose.yaml up --build`.
+# Needs BALLOT_BOX_SECRET_KEY in the environment or in deploy/.env.
+#
+# Three mixnet nodes, each with its own key volume. In a real election each
+# node runs on infrastructure of a different organisation; putting them on
+# one host, as here, gives no privacy.
+#
+# Blobs use the filesystem store for now; add MinIO when the S3 store exists.
+
+x-ballot-box-env: &ballot-box-env
+  BALLOT_BOX_SECRET_KEY: ${BALLOT_BOX_SECRET_KEY:?set BALLOT_BOX_SECRET_KEY}
+  BALLOT_BOX_DATABASE_URL: postgresql+psycopg://voting:voting@postgres:5432/voting
+  BALLOT_BOX_REDIS_URL: redis://redis:6379/0
+  BALLOT_BOX_BLOB_DIR: /data/blobs
+
+x-mixnet-node: &mixnet-node
+  build:
+    context: ..
+    dockerfile: deploy/python.Dockerfile
+    args: { PACKAGE: mixnet-node }
+  command: uvicorn mixnet_node.app:create_app --factory --host 0.0.0.0 --port 8100
+
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: voting
+      POSTGRES_PASSWORD: voting
+      POSTGRES_DB: voting
+    volumes: [postgres:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U voting"]
+      interval: 5s
+
+  redis:
+    image: redis:7
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+
+  ballot-box:
+    build:
+      context: ..
+      dockerfile: deploy/python.Dockerfile
+      args: { PACKAGE: ballot-box }
+    command: uvicorn ballot_box.app:create_app --factory --host 0.0.0.0 --port 8000
+    environment: *ballot-box-env
+    volumes: [blobs:/data/blobs]
+    ports: ["8000:8000"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  worker:
+    build:
+      context: ..
+      dockerfile: deploy/python.Dockerfile
+      args: { PACKAGE: ballot-box }
+    # One process per concurrent evmlr call: the library is serialised per process.
+    command: celery -A ballot_box.worker worker --loglevel=info --concurrency=2
+    environment: *ballot-box-env
+    volumes: [blobs:/data/blobs]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  mixnet-node-0:
+    <<: *mixnet-node
+    environment: { MIXNET_NODE_NODE_NAME: mixnet-node-0, MIXNET_NODE_KEY_DIR: /data/keys }
+    volumes: [keys-0:/data/keys]
+
+  mixnet-node-1:
+    <<: *mixnet-node
+    environment: { MIXNET_NODE_NODE_NAME: mixnet-node-1, MIXNET_NODE_KEY_DIR: /data/keys }
+    volumes: [keys-1:/data/keys]
+
+  mixnet-node-2:
+    <<: *mixnet-node
+    environment: { MIXNET_NODE_NODE_NAME: mixnet-node-2, MIXNET_NODE_KEY_DIR: /data/keys }
+    volumes: [keys-2:/data/keys]
+
+volumes:
+  postgres:
+  blobs:
+  keys-0:
+  keys-1:
+  keys-2:

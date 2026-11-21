@@ -1,0 +1,39 @@
+# uv workspace root. `uv sync` installs every package under packages/ in one
+# environment (.venv); `uv run --package <name> ...` runs within one of them.
+[project]
+name = "mixnet-voting-server"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = ["evmlr", "voting-common", "ballot-box", "mixnet-node"]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+evmlr = { workspace = true }
+voting-common = { workspace = true }
+ballot-box = { workspace = true }
+mixnet-node = { workspace = true }
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.8", "httpx>=0.28"]
+
+[tool.pytest.ini_options]
+testpaths = ["packages"]
+addopts = "--import-mode=importlib"
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "S"]
+
+[tool.ruff.lint.per-file-ignores]
+"**/tests/**" = ["S101", "S106"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["evmlr", "voting_common", "ballot_box", "mixnet_node"]
