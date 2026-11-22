@@ -8,7 +8,7 @@ import time
 
 import httpx
 
-B = "http://localhost:5173"
+B = os.environ.get("E2E_BASE_URL", "http://localhost:5173")
 PW = "browser test password"
 admin = httpx.Client(base_url=B, headers={"Authorization": f"Bearer {os.environ['BALLOT_BOX_ADMIN_TOKEN']}"})
 for u in ["manager1", "voter0", "voter1", "voter2"]:

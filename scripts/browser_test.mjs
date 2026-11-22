@@ -5,18 +5,18 @@
 //
 //   node scripts/browser_test.mjs ELECTION_ID OUT_DIR [after-vote]
 //
-// Needs a running stack behind the Vite dev server on :5173, the WASM module
+// Needs a running stack behind the Vite dev server on :5173 (or E2E_BASE_URL), the WASM module
 // built (make wasm), Chromium, and an open election with the two questions
 // and logins that scripts/browser_setup.py creates. Screenshots go to OUT_DIR.
 import { spawn } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 
 const [, , electionId, outDir] = process.argv;
-const BASE = 'http://localhost:5173';
+const BASE = process.env.E2E_BASE_URL ?? 'http://localhost:5173';
 const PW = 'browser test password';
 mkdirSync(outDir, { recursive: true });
 
-const chrome = spawn('chromium', ['--headless=new', '--no-sandbox', '--remote-debugging-port=9333',
+const chrome = spawn(process.env.CHROMIUM ?? 'chromium', ['--headless=new', '--no-sandbox', '--remote-debugging-port=9333',
   `--user-data-dir=${outDir}/profile`, '--window-size=1100,1400', 'about:blank'], { stdio: 'ignore' });
 process.on('exit', () => chrome.kill());
 

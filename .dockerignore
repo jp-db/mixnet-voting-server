@@ -1,0 +1,20 @@
+# Keep host builds out of the images: the C library must be rebuilt inside
+# (portable ARCH=), and the Python environment is created by uv sync.
+.git
+**/.git
+.venv
+**/__pycache__
+**/.ruff_cache
+**/.pytest_cache
+data
+frontend
+test-vectors
+scripts
+evmlr-shuffle/**/*.o
+evmlr-shuffle/**/*.d
+evmlr-shuffle/**/*.bin
+evmlr-shuffle/*.so*
+evmlr-shuffle/wasm/build
+evmlr-shuffle/wasm/deps
+packages/evmlr-py/build
+packages/evmlr-py/src/evmlr/_evmlr_cffi*

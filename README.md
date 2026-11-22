@@ -22,7 +22,8 @@ packages/
   ballot-box/           main server: FastAPI app + Celery worker
   mixnet-node/          one mixing server: FastAPI app holding one secret key
 frontend/               Vue 3 + TypeScript + Vite: booth, board, verifier, admin
-scripts/smoke_test.py   one election end to end against a running stack
+scripts/                e2e.sh (make e2e), smoke_test.py, browser_test.mjs
+.github/workflows/      CI: lint and tests (SQLite, Postgres), frontend, WASM + end to end
 deploy/                 Dockerfile and a development compose stack
 ```
 
@@ -106,7 +107,25 @@ parameters and bulletin board, ballot trackers, `me` and casting (one
 multipart request with a part per question, stored all or nothing). Results,
 transcripts and mix records become public when the manager publishes them.
 
-Docker: `cp deploy/.env.example deploy/.env`, fill in the values, then
-`docker compose -f deploy/compose.yaml up --build`, and create the first
-administrator with
-`docker compose -f deploy/compose.yaml run --rm ballot-box python -m ballot_box.accounts set-password admin --admin`.
+## End-to-end tests
+
+`make e2e` starts a throwaway stack on this machine (three mixnet nodes, the
+ballot box, a Celery worker, Redis in Docker, the Vite dev server) and runs
+one election through it: `scripts/smoke_test.py` over HTTP, then, when the
+WebAssembly module is built and Chromium is installed,
+`scripts/browser_test.mjs` through the real pages in headless Chromium
+(voting, the admin page, verification in the browser). It stops only what
+it started. CI runs the same script.
+
+If gmplib.org is unreachable for `make wasm`, put
+`gmp-6.3.0.tar.xz` from a GNU mirror (`https://ftpmirror.gnu.org/gmp/`) in
+`evmlr-shuffle/wasm/deps/src/` first; CI does this and checks its SHA-256.
+
+## Docker
+
+`cp deploy/.env.example deploy/.env` and fill in the values, build the
+frontend (`make wasm frontend-build`), then
+`docker compose -f deploy/compose.yaml up --build` and open
+http://localhost:8080 (nginx: the built frontend, with `/api` and `/auth`
+proxied to the ballot box). Create the first administrator with
+`docker compose -f deploy/compose.yaml exec ballot-box python -m ballot_box.accounts set-password admin --admin`.
