@@ -5,15 +5,27 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import SecretStr
+from pydantic import BaseModel, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class DefaultMixnetNode(BaseModel):
+    """A mixnet node the ballot box offers by default for new elections."""
+
+    name: str = Field(min_length=1, max_length=100)
+    url: str
+    """Base URL of the node's API, e.g. ``http://mixnet-node-0:8100``."""
+    token: SecretStr
+    """The node's ``MIXNET_NODE_API_TOKEN``."""
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="BALLOT_BOX_", env_file=".env", extra="ignore")
 
     secret_key: SecretStr
-    """Signs session cookies and CSRF tokens. Required; no default on purpose."""
+    """Signs session cookies and CSRF tokens, and seals the mixnet node tokens
+    stored in the database. Required; no default on purpose. Changing it makes
+    the stored node tokens unreadable: re-enter them."""
 
     database_url: str = "postgresql+psycopg://voting:voting@localhost:5432/voting"
     redis_url: str = "redis://localhost:6379/0"
@@ -25,6 +37,19 @@ class Settings(BaseSettings):
     auth_providers: list[str] = ["password"]
     """Enabled login methods, in display order: ``password``, ``cas``, ``oidc``."""
     cas_server_url: str | None = None
+
+    admin_token: SecretStr | None = Field(default=None, min_length=32)
+    """Bearer token for the ``/api/admin`` routes until user accounts and roles
+    exist. Unset, the admin API refuses every request."""
+
+    mixnet_nodes: list[DefaultMixnetNode] = []
+    """The default mixnet nodes, in their default mixing order, as JSON:
+    ``[{"name": "mixnet-node-0", "url": "http://...", "token": "..."}, ...]``.
+    They are copied into the node registry at startup; an election manager can
+    pick other registered nodes, or another order."""
+
+    mix_poll_seconds: float = Field(default=2.0, gt=0)
+    """How often the counting task polls a mixnet node for its job."""
 
 
 @lru_cache

@@ -35,6 +35,7 @@ Node.js, and [emsdk](https://emscripten.org/) for the WebAssembly build.
 git submodule update --init
 make sync            # builds evmlr-shuffle/libevmlr.so, then `uv sync`
 make test            # every Python test suite
+make migrate         # the ballot box's database (BALLOT_BOX_DATABASE_URL)
 make dev-ballot-box  # http://localhost:8000/docs
 make wasm            # once, for the frontend: WASM deps + module
 make frontend        # http://localhost:5173
@@ -54,5 +55,23 @@ one `.venv` at the root, with every package installed in editable mode.
 changing the C code run `make lib` and reinstall the bindings with
 `uv sync --reinstall-package evmlr`.
 
-Docker: `cp deploy/.env.example deploy/.env`, fill in the key, then
+The ballot box reads its default mix chain from `BALLOT_BOX_MIXNET_NODES`
+(JSON: name, url and token of each node, in order) and protects the election
+management API (`/api/admin`) with `BALLOT_BOX_ADMIN_TOKEN` until user
+accounts exist. Ballot box tests use SQLite; set
+`BALLOT_BOX_TEST_DATABASE_URL` to a scratch Postgres database to run them
+there (it is wiped after each test).
+
+## Elections
+
+An election has one or more questions, and each question is a separate
+election for evmlr: its own election id (a hash of the election, the
+question's position and its spec), its own key on every mix server, its own
+mix chain and tally. The manager picks the mix servers and their order; the
+default nodes are suggested. Answers are encoded into evmlr's vote
+polynomials by versioned encodings (`n_of_m/v1` for now) and counted by
+versioned methods; a decrypted vote that does not decode is left out of the
+result and listed with the reason.
+
+Docker: `cp deploy/.env.example deploy/.env`, fill in the values, then
 `docker compose -f deploy/compose.yaml up --build`.
