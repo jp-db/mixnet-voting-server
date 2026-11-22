@@ -145,7 +145,76 @@
       "coefficients": [],
       "malformed": "too_few_choices"
      }
-    ]
+    ],
+    "tally": {
+     "votes": [
+      [
+       1
+      ],
+      [
+       0,
+       1,
+       0,
+       1
+      ],
+      [
+       1,
+       1,
+       1
+      ],
+      [
+       2
+      ],
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       1
+      ],
+      [
+       3108
+      ],
+      []
+     ],
+     "result": {
+      "counts": [
+       1,
+       0,
+       0
+      ],
+      "blank": 0,
+      "valid": 1,
+      "discarded": 6
+     },
+     "discarded": [
+      {
+       "index": 1,
+       "reason": "nonzero_padding"
+      },
+      {
+       "index": 2,
+       "reason": "too_many_choices"
+      },
+      {
+       "index": 3,
+       "reason": "coefficient_not_0_or_1"
+      },
+      {
+       "index": 4,
+       "reason": "nonzero_padding"
+      },
+      {
+       "index": 5,
+       "reason": "coefficient_not_0_or_1"
+      },
+      {
+       "index": 6,
+       "reason": "too_few_choices"
+      }
+     ]
+    }
    },
    {
     "spec": {
@@ -310,7 +379,69 @@
       "coefficients": [],
       "answer": []
      }
-    ]
+    ],
+    "tally": {
+     "votes": [
+      [
+       1
+      ],
+      [
+       0,
+       1,
+       0,
+       1
+      ],
+      [
+       1,
+       1,
+       1
+      ],
+      [
+       2
+      ],
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       1
+      ],
+      [
+       3108
+      ],
+      []
+     ],
+     "result": {
+      "counts": [
+       1,
+       1,
+       0,
+       1
+      ],
+      "blank": 1,
+      "valid": 3,
+      "discarded": 4
+     },
+     "discarded": [
+      {
+       "index": 2,
+       "reason": "too_many_choices"
+      },
+      {
+       "index": 3,
+       "reason": "coefficient_not_0_or_1"
+      },
+      {
+       "index": 4,
+       "reason": "nonzero_padding"
+      },
+      {
+       "index": 5,
+       "reason": "coefficient_not_0_or_1"
+      }
+     ]
+    }
    },
    {
     "spec": {
@@ -477,7 +608,74 @@
       "coefficients": [],
       "malformed": "too_few_choices"
      }
-    ]
+    ],
+    "tally": {
+     "votes": [
+      [
+       1
+      ],
+      [
+       0,
+       1,
+       0,
+       1
+      ],
+      [
+       1,
+       1,
+       1
+      ],
+      [
+       2
+      ],
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       1
+      ],
+      [
+       3108
+      ],
+      []
+     ],
+     "result": {
+      "counts": [
+       1,
+       2,
+       1,
+       1,
+       0
+      ],
+      "blank": 0,
+      "valid": 2,
+      "discarded": 5
+     },
+     "discarded": [
+      {
+       "index": 0,
+       "reason": "too_few_choices"
+      },
+      {
+       "index": 3,
+       "reason": "coefficient_not_0_or_1"
+      },
+      {
+       "index": 4,
+       "reason": "nonzero_padding"
+      },
+      {
+       "index": 5,
+       "reason": "coefficient_not_0_or_1"
+      },
+      {
+       "index": 6,
+       "reason": "too_few_choices"
+      }
+     ]
+    }
    }
   ]
  }

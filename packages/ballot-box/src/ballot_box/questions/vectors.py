@@ -16,6 +16,7 @@ import evmlr
 
 from .encodings import ENCODINGS
 from .spec import QuestionSpec
+from .tally import tally
 
 PATH = Path(__file__).resolve().parents[5] / "test-vectors" / "encodings.json"
 
@@ -63,7 +64,19 @@ def generate() -> dict[str, Any]:
                     )
                 except ValueError as e:
                     decode.append({"coefficients": coefficients, "malformed": getattr(e, "reason", str(e))})
-            cases.append({"spec": spec.model_dump(mode="json"), "encode": encode, "decode": decode})
+            result, discarded = tally(spec, [_pad(c) for c in _DECODE])
+            cases.append(
+                {
+                    "spec": spec.model_dump(mode="json"),
+                    "encode": encode,
+                    "decode": decode,
+                    "tally": {
+                        "votes": _DECODE,
+                        "result": result,
+                        "discarded": [{"index": d.index, "reason": d.reason} for d in discarded],
+                    },
+                }
+            )
         out["encodings"][name] = cases
     return out
 

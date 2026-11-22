@@ -201,7 +201,7 @@ class Voter(Base):
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     election_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("elections.id"))
     voter_id: Mapped[int] = mapped_column(BigInteger)
-    """The id evmlr binds into this voter's ballots (positive, 63 bits). Public:
+    """The id evmlr binds into this voter's ballots (1 to 2**31 - 1: the WebAssembly build's limit). Public:
     the board shows who cast, never how."""
     provider: Mapped[str] = mapped_column(String(50))
     external_id: Mapped[str] = mapped_column(String(255))

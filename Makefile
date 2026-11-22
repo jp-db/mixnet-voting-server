@@ -28,7 +28,7 @@ test: sync
 	cd frontend && npm test
 
 lint:
-	uv run ruff check packages
+	uv run ruff check packages scripts
 
 migrate:
 	uv run python -m ballot_box.db

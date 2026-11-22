@@ -136,7 +136,7 @@ class VotersIn(BaseModel):
 class VoterOut(BaseModel):
     id: uuid.UUID
     voter_id: str
-    """Decimal: a 63-bit integer loses precision as a JSON number in JavaScript."""
+    """Decimal string, as everywhere in the API (evmlr's ids are 64-bit types)."""
     provider: str
     external_id: str
     email: str | None

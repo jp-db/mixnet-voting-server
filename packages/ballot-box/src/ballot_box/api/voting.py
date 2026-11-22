@@ -2,6 +2,7 @@
 
 Public, once an election is frozen (earlier it does not exist here):
 
+    ``GET /``                                          every public election, newest first
     ``GET /{id}``                                      the election, its questions and mix servers
     ``GET /{id}/questions/{i}/params``                 question i's public parameters (bytes)
     ``GET /{id}/questions/{i}/board``                  the board: every ballot cast, in order
@@ -19,8 +20,8 @@ For the logged-in voter:
     ``GET  /{id}/me``        whether they are on the roll, their voter id, what they cast
     ``POST /{id}/ballots``   cast: multipart, one part ``q<i>`` per question answered
 
-Voter ids are 63-bit integers, so they travel as decimal strings: JSON
-numbers lose precision in JavaScript.
+Voter ids travel as decimal strings, as evmlr's 64-bit ids would need in
+JavaScript; the ballot box keeps them below 2**31 (the WebAssembly limit).
 """
 
 from __future__ import annotations
@@ -174,6 +175,27 @@ class ResultsOut(BaseModel):
 
 
 # --- public ---------------------------------------------------------------------------------
+
+
+class ElectionListItem(BaseModel):
+    id: uuid.UUID
+    title: str
+    state: str
+    opened_at: datetime | None
+    closed_at: datetime | None
+
+
+@router.get("", response_model=list[ElectionListItem])
+def list_elections(db: Db) -> list[ElectionListItem]:
+    rows = db.scalars(
+        select(Election).where(Election.state.in_(_PUBLIC)).order_by(Election.created_at.desc())
+    )
+    return [
+        ElectionListItem(
+            id=e.id, title=e.title, state=e.state.value, opened_at=e.opened_at, closed_at=e.closed_at
+        )
+        for e in rows
+    ]
 
 
 @router.get("/{election_id}", response_model=PublicElection)

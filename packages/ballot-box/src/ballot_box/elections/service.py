@@ -148,9 +148,15 @@ class VoterEntry:
     display_name: str | None = None
 
 
+MAX_VOTER_ID = 2**31 - 1
+"""evmlr's voter ids are FLINT ``slong``: 64 bits natively but 32 on wasm32,
+where ``evmlr_cast`` refuses larger ids. Ids must fit both, or voters could not
+cast from a browser."""
+
+
 def _new_voter_id(taken: set[int]) -> int:
     while True:
-        vid = secrets.randbelow(2**63 - 1) + 1
+        vid = secrets.randbelow(MAX_VOTER_ID) + 1
         if vid not in taken:
             taken.add(vid)
             return vid

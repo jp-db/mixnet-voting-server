@@ -16,7 +16,9 @@ export default defineConfig({
   },
   server: {
     fs: { allow: ['.', evmlrWasmDir] },
-    proxy: { '/api': 'http://localhost:8000' },
+    // The ballot box on :8000. Run it with BALLOT_BOX_PUBLIC_URL=http://localhost:5173:
+    // that is the origin the browser sends, which the ballot box checks.
+    proxy: { '/api': 'http://localhost:8000', '/auth': 'http://localhost:8000' },
   },
   worker: { format: 'es' },
 });

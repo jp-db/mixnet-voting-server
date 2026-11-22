@@ -17,6 +17,7 @@ declare module '@evmlr/evmlr.mjs' {
     cast(pp: Uint8Array, voterId: number | bigint | string, vote: number | number[]): Uint8Array<ArrayBuffer>;
     checkBallot(pp: Uint8Array, ballot: Uint8Array): number | bigint;
     verify(pp: Uint8Array, ballots: Uint8Array[], transcript: Uint8Array): Uint16Array[];
+    paramsInfo(pp: Uint8Array): { servers: number; electionId: Uint8Array };
   }
   export function loadEvmlr(moduleArgs?: object): Promise<Evmlr>;
 }

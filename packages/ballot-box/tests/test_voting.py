@@ -64,9 +64,12 @@ def booth(web: TestClient, e: dict, answers: dict[int, tuple[int, ...] | list[in
 # --- the public election ------------------------------------------------------------------------
 
 
-def test_drafts_are_not_public(api, web):
+def test_drafts_are_not_public(api, queue, web):
     e = new_election(api)
     assert web.get(f"/api/elections/{e['id']}").status_code == 404
+    assert web.get("/api/elections").json() == []
+    e = opened(api, queue)
+    assert [x["id"] for x in web.get("/api/elections").json()] == [e["id"]]
 
 
 def test_public_election_and_parameters(api, queue, web):

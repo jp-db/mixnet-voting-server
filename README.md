@@ -22,6 +22,7 @@ packages/
   ballot-box/           main server: FastAPI app + Celery worker
   mixnet-node/          one mixing server: FastAPI app holding one secret key
 frontend/               Vue 3 + TypeScript + Vite: booth, board, verifier, admin
+scripts/smoke_test.py   one election end to end against a running stack
 deploy/                 Dockerfile and a development compose stack
 ```
 
@@ -40,6 +41,12 @@ make dev-ballot-box  # http://localhost:8000/docs
 make wasm            # once, for the frontend: WASM deps + module
 make frontend        # http://localhost:5173
 ```
+
+For the frontend in development, run the ballot box with
+`BALLOT_BOX_PUBLIC_URL=http://localhost:5173`: the browser talks to Vite,
+which proxies `/api` and `/auth` to the ballot box, and the ballot box checks
+that requests come from its public URL. The booth and the verifier need the
+WebAssembly module (`make wasm`).
 
 A mixnet node refuses to start without its secrets. For development:
 
