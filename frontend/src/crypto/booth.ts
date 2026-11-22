@@ -23,8 +23,8 @@ export class Booth {
     };
   }
 
-  /** Encrypts and proves a vote for the voter's per-election alias. */
-  cast(pp: Uint8Array, voterId: number, vote: number | number[]): Promise<CastResult> {
+  /** Encrypts and proves a vote (the coefficients from questions/encodings.ts) for the voter id from /me. */
+  cast(pp: Uint8Array, voterId: string, vote: number[]): Promise<CastResult> {
     const id = this.nextId++;
     const request: CastRequest = { id, pp, voterId, vote };
     return new Promise((resolve, reject) => {

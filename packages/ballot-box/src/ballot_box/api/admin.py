@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import hmac
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from datetime import datetime
 from typing import Annotated, Any
 
@@ -25,12 +25,11 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..elections import service as svc_ops
-from ..elections.service import Invalid, NotFound, VoterEntry, WrongState
+from ..elections.service import VoterEntry
 from ..mixnet.nodes import register_node
 from ..models import Election, MixnetNode, Question, Tally, Voter
 from ..questions import QuestionSpec
-from ..services import Services
-from ..tasks import TaskQueue
+from .deps import Db, Queue, Svc, errors
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -49,35 +48,6 @@ def require_admin(
 
 
 router = APIRouter(prefix="/api/admin", dependencies=[Depends(require_admin)], tags=["admin"])
-
-
-def _services(request: Request) -> Services:
-    return request.app.state.services
-
-
-def _queue(request: Request) -> TaskQueue:
-    return request.app.state.queue
-
-
-def _session(request: Request) -> Iterator[Session]:
-    with request.app.state.services.db() as session:
-        yield session
-
-
-Svc = Annotated[Services, Depends(_services)]
-Queue = Annotated[TaskQueue, Depends(_queue)]
-Db = Annotated[Session, Depends(_session)]
-
-
-def _errors[T](fn: Callable[[], T]) -> T:
-    try:
-        return fn()
-    except NotFound as e:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from None
-    except WrongState as e:
-        raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from None
-    except Invalid as e:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(e)) from None
 
 
 # --- schemas --------------------------------------------------------------------------------
@@ -133,7 +103,8 @@ class VotersIn(BaseModel):
 
 class VoterOut(BaseModel):
     id: uuid.UUID
-    voter_id: int
+    voter_id: str
+    """Decimal: a 63-bit integer loses precision as a JSON number in JavaScript."""
     provider: str
     external_id: str
     email: str | None
@@ -143,7 +114,7 @@ class VoterOut(BaseModel):
     def of(cls, v: Voter) -> VoterOut:
         return cls(
             id=v.id,
-            voter_id=v.voter_id,
+            voter_id=str(v.voter_id),
             provider=v.provider,
             external_id=v.external_id,
             email=v.email,
@@ -300,7 +271,7 @@ def list_elections(db: Db) -> list[ElectionSummary]:
 
 @router.post("/elections", response_model=ElectionOut, status_code=status.HTTP_201_CREATED)
 def create_election(body: ElectionIn, db: Db) -> ElectionOut:
-    election = _errors(
+    election = errors(
         lambda: svc_ops.create_election(db, body.title, body.description, body.questions, body.mix_servers)
     )
     db.commit()
@@ -309,7 +280,7 @@ def create_election(body: ElectionIn, db: Db) -> ElectionOut:
 
 @router.get("/elections/{election_id}", response_model=ElectionOut)
 def get_election(election_id: uuid.UUID, db: Db) -> ElectionOut:
-    return ElectionOut.of(db, _errors(lambda: svc_ops.get_election(db, election_id)))
+    return ElectionOut.of(db, errors(lambda: svc_ops.get_election(db, election_id)))
 
 
 @router.patch("/elections/{election_id}", response_model=ElectionOut)
@@ -327,14 +298,14 @@ def update_election(election_id: uuid.UUID, body: ElectionPatch, db: Db) -> Elec
         )
         return election
 
-    election = _errors(run)
+    election = errors(run)
     db.commit()
     return ElectionOut.of(db, election)
 
 
 @router.get("/elections/{election_id}/voters", response_model=list[VoterOut])
 def list_voters(election_id: uuid.UUID, db: Db) -> list[VoterOut]:
-    election = _errors(lambda: svc_ops.get_election(db, election_id))
+    election = errors(lambda: svc_ops.get_election(db, election_id))
     return [VoterOut.of(v) for v in election.voters]
 
 
@@ -342,9 +313,7 @@ def list_voters(election_id: uuid.UUID, db: Db) -> list[VoterOut]:
 def add_voters(election_id: uuid.UUID, body: VotersIn, db: Db) -> list[VoterOut]:
     """Adds voters to the roll (DRAFT only). Entries already on it come back unchanged."""
     entries = [VoterEntry(**v.model_dump()) for v in body.voters]
-    voters = _errors(
-        lambda: svc_ops.add_voters(db, svc_ops.get_election(db, election_id, lock=True), entries)
-    )
+    voters = errors(lambda: svc_ops.add_voters(db, svc_ops.get_election(db, election_id, lock=True), entries))
     db.commit()
     return [VoterOut.of(v) for v in voters]
 
@@ -354,7 +323,7 @@ def _action(db: Db, election_id: uuid.UUID, op: Callable[[Election], Any]) -> tu
         election = svc_ops.get_election(db, election_id, lock=True)
         return election, op(election)
 
-    election, out = _errors(run)
+    election, out = errors(run)
     db.commit()
     return election, out
 

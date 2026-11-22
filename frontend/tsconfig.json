@@ -17,7 +17,12 @@
       "@/*": [
         "./src/*"
       ]
-    }
+    },
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
+    "types": [
+      "node"
+    ]
   },
   "include": [
     "src/**/*.ts",

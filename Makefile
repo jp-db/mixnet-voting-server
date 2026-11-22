@@ -7,7 +7,7 @@ help:
 	@echo "lib              build evmlr-shuffle/libevmlr.so (needs FLINT >= 3.2)"
 	@echo "wasm             build the WebAssembly module for the frontend (needs emsdk)"
 	@echo "sync             lib + uv sync (installs every Python package into .venv)"
-	@echo "test             run the Python test suites"
+	@echo "test             run the Python and frontend test suites"
 	@echo "lint             ruff check"
 	@echo "migrate          bring the ballot box's database up to date"
 	@echo "dev-ballot-box   run the ballot box with auto-reload on :8000"
@@ -25,6 +25,7 @@ sync: lib
 
 test: sync
 	uv run pytest
+	cd frontend && npm test
 
 lint:
 	uv run ruff check packages

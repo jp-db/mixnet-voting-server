@@ -9,10 +9,11 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from starlette.middleware.sessions import SessionMiddleware
 
 import evmlr
 
-from .api import admin
+from .api import admin, voting
 from .config import Settings, get_settings
 from .mixnet import sync_default_nodes
 from .services import Services
@@ -39,7 +40,15 @@ def create_app(
     def health() -> dict[str, object]:
         return {"status": "ok", "evmlr": {"modulus": evmlr.MODULUS, "vote_len": evmlr.VOTE_LEN}}
 
+    app.add_middleware(
+        SessionMiddleware,
+        secret_key=settings.secret_key.get_secret_value(),
+        session_cookie="ballot_box_session",
+        max_age=12 * 3600,
+        same_site="lax",
+        https_only=settings.public_url.startswith("https://"),
+    )
     app.include_router(admin.router)
-    # Still to add: auth (login/logout/callbacks), the voter-facing booth
-    # (parameters, casting) and the public bulletin board.
+    app.include_router(voting.router)
+    # Still to add: the login routes (password, CAS), which fill the session.
     return app

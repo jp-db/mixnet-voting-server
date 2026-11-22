@@ -6,8 +6,9 @@ import { loadEvmlr } from '@evmlr/evmlr.mjs';
 export interface CastRequest {
   id: number;
   pp: Uint8Array;
-  voterId: number;
-  vote: number | number[];
+  /** Decimal string, as the API sends it: voter ids are 63-bit. */
+  voterId: string;
+  vote: number[];
 }
 
 export type CastResponse =

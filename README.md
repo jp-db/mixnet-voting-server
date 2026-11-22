@@ -71,7 +71,14 @@ mix chain and tally. The manager picks the mix servers and their order; the
 default nodes are suggested. Answers are encoded into evmlr's vote
 polynomials by versioned encodings (`n_of_m/v1` for now) and counted by
 versioned methods; a decrypted vote that does not decode is left out of the
-result and listed with the reason.
+result and listed with the reason. The booth's TypeScript encoder and the
+Python one are both checked against `test-vectors/encodings.json`
+(regenerate with `python -m ballot_box.questions.vectors` when adding cases).
+
+Voters use `/api/elections/{id}`: the public election, each question's
+parameters and bulletin board, ballot trackers, `me` and casting (one
+multipart request with a part per question, stored all or nothing). Results,
+transcripts and mix records become public when the manager publishes them.
 
 Docker: `cp deploy/.env.example deploy/.env`, fill in the values, then
 `docker compose -f deploy/compose.yaml up --build`.

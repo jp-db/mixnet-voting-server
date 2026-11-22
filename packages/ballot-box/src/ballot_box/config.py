@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     They are copied into the node registry at startup; an election manager can
     pick other registered nodes, or another order."""
 
+    max_ballot_bytes: int = Field(default=4 * 1024 * 1024, gt=0)
+    """Largest ballot accepted. A ballot is about 34 KB per mix server."""
+
     mix_poll_seconds: float = Field(default=2.0, gt=0)
     """How often the counting task polls a mixnet node for its job."""
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 import secrets
 import struct
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -54,8 +54,12 @@ def _move(election: Election, target: ElectionState) -> None:
         raise WrongState(str(e)) from e
 
 
-def get_election(session: Session, election_id: uuid.UUID, *, lock: bool = False) -> Election:
-    election = session.get(Election, election_id, with_for_update=lock)
+def get_election(
+    session: Session, election_id: uuid.UUID, *, lock: bool = False, shared: bool = False
+) -> Election:
+    """``lock`` takes the row exclusively (state changes); ``shared`` lets casts run side by side."""
+    with_for_update: bool | dict[str, bool] = {"read": True} if shared and not lock else lock
+    election = session.get(Election, election_id, with_for_update=with_for_update)
     if election is None:
         raise NotFound("no such election")
     return election
@@ -277,31 +281,56 @@ def ballot_voter_id(ballot: bytes) -> int:
     return _VOTER_ID.unpack_from(ballot, _VOTER_ID_OFFSET)[0]
 
 
-def cast_ballot(
-    session: Session, blobs: BlobStore, election: Election, question: Question, voter: Voter, ballot: bytes
-) -> Ballot:
-    """Puts ``voter``'s ballot for ``question`` on the board. Returns it; its blob key is the receipt.
-
-    The caller has authenticated ``voter``. A voter may cast again: the last
-    valid ballot counts.
-    """
-    _require(election, ElectionState.OPEN)
-    if question.election_id != election.id or voter.election_id != election.id:
-        raise Invalid("the question or the voter belongs to another election")
+def _check_ballot(blobs: BlobStore, question: Question, voter: Voter, ballot: bytes) -> None:
     if ballot_voter_id(ballot) != voter.voter_id:
-        raise Invalid("the ballot was made for another voter")
+        raise Invalid(f"question {question.index}: the ballot was made for another voter")
     if question.params_key is None:  # cannot happen for an open election
         raise WrongState("the question has no public parameters")
     try:
         claimed = evmlr.check_ballot(blobs.get(question.params_key), ballot)
     except evmlr.EvmlrError as e:
-        raise Invalid(f"the ballot does not verify: {e.status.name}") from e
+        raise Invalid(f"question {question.index}: the ballot does not verify: {e.status.name}") from e
     if claimed != voter.voter_id:
-        raise Invalid("the ballot was made for another voter")
-    row = Ballot(question_id=question.id, voter_pk=voter.id, blob_key=blobs.put(ballot))
-    session.add(row)
+        raise Invalid(f"question {question.index}: the ballot was made for another voter")
+
+
+def cast_ballots(
+    session: Session, blobs: BlobStore, election: Election, voter: Voter, ballots: Mapping[int, bytes]
+) -> list[Ballot]:
+    """Puts ``voter``'s ballots on the board, keyed by question index: all of them or none.
+
+    The caller has authenticated ``voter`` and holds at least a shared lock on
+    the election row, so the election cannot close in the middle. A voter may
+    cast again: the last valid ballot of each question counts. Returns the
+    board entries; a ballot's blob key (its SHA-256) is the voter's tracker.
+    """
+    _require(election, ElectionState.OPEN)
+    if voter.election_id != election.id:
+        raise Invalid("the voter belongs to another election")
+    if not ballots:
+        raise Invalid("no ballots")
+    questions = {q.index: q for q in election.questions}
+    unknown = sorted(set(ballots) - set(questions))
+    if unknown:
+        raise Invalid(f"no such question: {unknown[0]}")
+    for index, ballot in sorted(ballots.items()):
+        _check_ballot(blobs, questions[index], voter, ballot)
+    rows = [
+        Ballot(question_id=questions[index].id, voter_pk=voter.id, blob_key=blobs.put(ballot))
+        for index, ballot in sorted(ballots.items())
+    ]
+    session.add_all(rows)
     session.flush()
-    return row
+    return rows
+
+
+def cast_ballot(
+    session: Session, blobs: BlobStore, election: Election, question: Question, voter: Voter, ballot: bytes
+) -> Ballot:
+    """:func:`cast_ballots` for one question."""
+    if question.election_id != election.id:
+        raise Invalid("the question belongs to another election")
+    return cast_ballots(session, blobs, election, voter, {question.index: ballot})[0]
 
 
 def board_ballots(session: Session, question_id: uuid.UUID) -> list[str]:

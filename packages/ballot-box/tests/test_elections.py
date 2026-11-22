@@ -278,7 +278,7 @@ def test_voter_ids_are_random_and_registration_idempotent(api):
     ).json()
     assert again[0]["voter_id"] == roll[0]["voter_id"]
     assert len({v["voter_id"] for v in roll}) == 3
-    assert all(0 < v["voter_id"] < 2**63 for v in roll)
+    assert all(0 < int(v["voter_id"]) < 2**63 for v in roll)
 
 
 def test_inner_layer_tampering_is_caught_only_by_the_mix(api, queue, services):

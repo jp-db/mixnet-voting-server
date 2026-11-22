@@ -60,3 +60,10 @@ def test_wrong_length_is_malformed():
 def test_spec_validation(bad):
     with pytest.raises(ValidationError):
         QuestionSpec(title="Q", **bad)
+
+
+def test_vectors_file_is_current():
+    """test-vectors/encodings.json is what the encoders produce (the booth's tests read it)."""
+    from ballot_box.questions import vectors
+
+    assert vectors.PATH.read_text() == vectors.render(), "run: python -m ballot_box.questions.vectors"
