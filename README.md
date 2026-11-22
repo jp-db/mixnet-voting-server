@@ -56,11 +56,30 @@ changing the C code run `make lib` and reinstall the bindings with
 `uv sync --reinstall-package evmlr`.
 
 The ballot box reads its default mix chain from `BALLOT_BOX_MIXNET_NODES`
-(JSON: name, url and token of each node, in order) and protects the election
-management API (`/api/admin`) with `BALLOT_BOX_ADMIN_TOKEN` until user
-accounts exist. Ballot box tests use SQLite; set
-`BALLOT_BOX_TEST_DATABASE_URL` to a scratch Postgres database to run them
-there (it is wiped after each test).
+(JSON: name, url and token of each node, in order). Ballot box tests use
+SQLite; set `BALLOT_BOX_TEST_DATABASE_URL` to a scratch Postgres database to
+run them there (it is wiped after each test).
+
+## Logins and roles
+
+People log in with a username and password (`password`) or through a CAS
+server (`cas`), as enabled in `BALLOT_BOX_AUTH_PROVIDERS` (with
+`BALLOT_BOX_CAS_SERVER_URL` for CAS). There is no self sign-up: an
+administrator creates password logins. Voting needs no role: the voter roll
+of each election lists who may vote, by provider and username.
+
+Administrators may do everything; managers may create elections and manage
+those they are a manager of. The first administrator comes from
+`BALLOT_BOX_ADMIN_IDENTITIES` (e.g. `["cas:jdoe"]`, made admin on login) or
+the command line:
+
+```sh
+uv run python -m ballot_box.accounts set-password admin --admin
+uv run python -m ballot_box.accounts grant cas:jdoe manager
+```
+
+`BALLOT_BOX_ADMIN_TOKEN`, if set, is a bearer token with administrator
+rights for scripts.
 
 ## Elections
 
@@ -81,4 +100,6 @@ multipart request with a part per question, stored all or nothing). Results,
 transcripts and mix records become public when the manager publishes them.
 
 Docker: `cp deploy/.env.example deploy/.env`, fill in the values, then
-`docker compose -f deploy/compose.yaml up --build`.
+`docker compose -f deploy/compose.yaml up --build`, and create the first
+administrator with
+`docker compose -f deploy/compose.yaml run --rm ballot-box python -m ballot_box.accounts set-password admin --admin`.

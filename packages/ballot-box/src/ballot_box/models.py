@@ -71,6 +71,47 @@ class MixnetNode(Base):
     created_at: Mapped[datetime] = mapped_column(default=_now)
 
 
+class Account(Base):
+    """Someone who has logged in, with what they may manage. Voting needs no account role:
+    the voter roll decides who votes."""
+
+    __tablename__ = "accounts"
+    __table_args__ = (UniqueConstraint("provider", "external_id"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    provider: Mapped[str] = mapped_column(String(50))
+    external_id: Mapped[str] = mapped_column(String(255))
+    email: Mapped[str | None] = mapped_column(String(320))
+    display_name: Mapped[str | None] = mapped_column(String(200))
+    is_admin: Mapped[bool] = mapped_column(default=False)
+    """Everything: nodes, accounts, every election."""
+    can_manage: Mapped[bool] = mapped_column(default=False)
+    """May create elections, and manage those they are a manager of."""
+    created_at: Mapped[datetime] = mapped_column(default=_now)
+    last_login_at: Mapped[datetime | None]
+
+
+class PasswordCredential(Base):
+    """A login of the ``password`` provider. The username is the identity's external id."""
+
+    __tablename__ = "password_credentials"
+
+    username: Mapped[str] = mapped_column(String(150), primary_key=True)
+    password_hash: Mapped[str] = mapped_column(String(200))
+    """argon2id, in PHC string format."""
+    email: Mapped[str | None] = mapped_column(String(320))
+    display_name: Mapped[str | None] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(default=_now)
+    updated_at: Mapped[datetime] = mapped_column(default=_now, onupdate=_now)
+
+
+class ElectionManager(Base):
+    __tablename__ = "election_managers"
+
+    election_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("elections.id"), primary_key=True)
+    account_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("accounts.id"), primary_key=True)
+
+
 class Election(Base):
     __tablename__ = "elections"
 
@@ -93,6 +134,7 @@ class Election(Base):
     mix_servers: Mapped[list[ElectionMixServer]] = relationship(
         order_by="ElectionMixServer.position", cascade="all, delete-orphan"
     )
+    managers: Mapped[list[ElectionManager]] = relationship(cascade="all, delete-orphan")
     voters: Mapped[list[Voter]] = relationship(
         back_populates="election",
         order_by="(Voter.provider, Voter.external_id)",

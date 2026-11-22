@@ -353,11 +353,11 @@ def test_admin_api_needs_the_token(api):
     assert api.get("/api/admin/elections", headers={"Authorization": "Bearer wrong"}).status_code == 401
 
 
-def test_admin_api_is_off_without_a_token(settings, services, queue):
+def test_bearer_access_is_off_without_a_token(settings, services, queue):
     settings = settings.model_copy(update={"admin_token": None})
     with TestClient(create_app(settings, services=services, queue=queue)) as client:
         r = client.get("/api/admin/elections", headers={"Authorization": f"Bearer {ADMIN_TOKEN}"})
-    assert r.status_code == 403
+    assert r.status_code == 401
 
 
 def test_unknown_election(api):

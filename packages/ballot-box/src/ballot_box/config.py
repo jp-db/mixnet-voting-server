@@ -5,7 +5,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -35,12 +35,17 @@ class Settings(BaseSettings):
     """Base URL voters reach; used for CAS/OIDC callback URLs."""
 
     auth_providers: list[str] = ["password"]
-    """Enabled login methods, in display order: ``password``, ``cas``, ``oidc``."""
+    """Enabled login methods, in display order: ``password``, ``cas``."""
     cas_server_url: str | None = None
+    """Base URL of the CAS server (e.g. ``https://cas.example.edu/cas/``), for ``cas``."""
+
+    admin_identities: list[str] = []
+    """Identities made administrators when they log in, as ``provider:external_id``
+    (e.g. ``["cas:jdoe", "password:admin"]``): how the first administrator gets in."""
 
     admin_token: SecretStr | None = Field(default=None, min_length=32)
-    """Bearer token for the ``/api/admin`` routes until user accounts and roles
-    exist. Unset, the admin API refuses every request."""
+    """Optional bearer token for the ``/api/admin`` routes, with administrator
+    rights, for scripts and automation. People log in instead."""
 
     mixnet_nodes: list[DefaultMixnetNode] = []
     """The default mixnet nodes, in their default mixing order, as JSON:
@@ -53,6 +58,15 @@ class Settings(BaseSettings):
 
     mix_poll_seconds: float = Field(default=2.0, gt=0)
     """How often the counting task polls a mixnet node for its job."""
+
+    @model_validator(mode="after")
+    def _check_providers(self) -> Settings:
+        unknown = set(self.auth_providers) - {"password", "cas"}
+        if unknown:
+            raise ValueError(f"unknown auth providers: {', '.join(sorted(unknown))}")
+        if "cas" in self.auth_providers and not self.cas_server_url:
+            raise ValueError("the cas provider needs cas_server_url")
+        return self
 
 
 @lru_cache

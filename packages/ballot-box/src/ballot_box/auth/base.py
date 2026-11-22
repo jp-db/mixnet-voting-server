@@ -6,9 +6,10 @@ the voter roll of each election decides what that identity may do, by
 matching on ``(provider, external_id)``, on the email, or on provider
 attributes (e.g. a CAS ``memberOf``).
 
-Planned implementations: ``PasswordProvider`` (argon2 hashes in the users
-table), ``CASProvider`` (python-cas: redirect to the CAS login, validate the
-service ticket on callback) and ``OIDCProvider`` (Authlib).
+Implemented: ``password`` (:mod:`.password`, argon2id hashes in the
+database) and ``cas`` (:mod:`.cas`, python-cas). Their routes are in
+:mod:`ballot_box.api.auth`. Eligibility matches the roll on
+``(provider, external_id)`` only, for now.
 """
 
 from __future__ import annotations

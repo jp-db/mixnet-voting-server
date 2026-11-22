@@ -13,7 +13,8 @@ from starlette.middleware.sessions import SessionMiddleware
 
 import evmlr
 
-from .api import admin, voting
+from .api import admin, auth, voting
+from .auth.cas import CASProvider
 from .config import Settings, get_settings
 from .mixnet import sync_default_nodes
 from .services import Services
@@ -35,6 +36,8 @@ def create_app(
     app = FastAPI(title="Mixnet voting — ballot box", version="0.1.0", lifespan=lifespan)
     app.state.settings = settings
     app.state.queue = queue or CeleryQueue()
+    if settings.cas_server_url:
+        app.state.cas = CASProvider(settings.cas_server_url, settings.public_url)
 
     @app.get("/health", tags=["ops"])
     def health() -> dict[str, object]:
@@ -48,7 +51,7 @@ def create_app(
         same_site="lax",
         https_only=settings.public_url.startswith("https://"),
     )
+    app.include_router(auth.router)
     app.include_router(admin.router)
     app.include_router(voting.router)
-    # Still to add: the login routes (password, CAS), which fill the session.
     return app
