@@ -10,10 +10,18 @@ Lifecycle actions are ``POST /api/admin/elections/{id}/<action>``:
 ``freeze`` (DRAFT -> KEYGEN, queues key generation; in KEYGEN, retries it),
 ``unfreeze`` (KEYGEN -> DRAFT), ``open``, ``close``, ``count`` (CLOSED ->
 MIXING, queues one count per question), ``retry-count`` and ``publish``.
+``PUT .../schedule`` sets when the scheduler opens and closes the election;
+``open`` and ``close`` still work at any time (to open or close early).
+
+Also: ``POST .../clone`` (a new draft with the same configuration),
+``POST .../voters/csv`` and ``POST .../managers/csv`` (``text/csv`` bodies,
+see :mod:`ballot_box.elections.rolls`), and ``POST .../test-ballots``
+(the booth simulation: checks ballots as casting would, and keeps nothing).
 """
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import uuid
 from collections.abc import Callable
@@ -21,19 +29,22 @@ from datetime import datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.concurrency import run_in_threadpool
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, Field
+from pydantic import AwareDatetime, BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..auth import current_identity, same_origin
 from ..auth import password as password_auth
 from ..auth.accounts import Principal, find_account, identity_key
+from ..elections import rolls
 from ..elections import service as svc_ops
 from ..elections.service import VoterEntry
 from ..mixnet.nodes import register_node
 from ..models import Account, Election, ElectionManager, MixnetNode, Question, Tally, Voter
 from ..questions import QuestionSpec
+from ..services import Services
 from .deps import Db, Queue, Svc, errors
 
 _bearer = HTTPBearer(auto_error=False)
@@ -55,12 +66,25 @@ def principal(
     if identity is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "log in first")
     account = find_account(db, identity)
-    if account is None or not (account.is_admin or account.can_manage):
+    if account is None or not (account.is_admin or account.can_manage or manages_any(db, account)):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "this account may not manage elections")
-    return Principal(account=account, is_admin=account.is_admin, can_manage=True)
+    return Principal(account=account, is_admin=account.is_admin, can_manage=account.can_manage)
+
+
+def manages_any(db: Session, account: Account) -> bool:
+    """A manager of some election may use the admin API for it, without the right to create elections."""
+    found = db.scalar(
+        select(ElectionManager.election_id).where(ElectionManager.account_id == account.id).limit(1)
+    )
+    return found is not None
 
 
 Caller = Annotated[Principal, Depends(principal)]
+
+
+def require_creator(caller: Caller) -> None:
+    if not (caller.is_admin or caller.can_manage):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "this account may not create elections")
 
 
 def require_admin(caller: Caller) -> None:
@@ -108,18 +132,31 @@ class MixnetNodeOut(BaseModel):
 class ElectionIn(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     description: str = ""
-    questions: list[QuestionSpec] = Field(min_length=1)
+    questions: list[QuestionSpec] = []
+    """May be empty: add the questions later, before freezing."""
     mix_servers: list[str] | None = None
     """Node names in mixing order. Omitted: the default nodes."""
+    open_to_all: bool = False
 
 
 class ElectionPatch(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=200)
     description: str | None = None
-    questions: list[QuestionSpec] | None = Field(default=None, min_length=1)
+    questions: list[QuestionSpec] | None = None
     mix_servers: list[str] | None = None
     use_default_mix_servers: bool = False
     """Replace the mix chain with the default nodes."""
+    open_to_all: bool | None = None
+    """Every registered account may vote: they are added to the roll when the election freezes."""
+
+
+class ScheduleIn(BaseModel):
+    opens_at: AwareDatetime | None = None
+    closes_at: AwareDatetime | None = None
+
+
+class CloneIn(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
 
 
 class VoterIn(BaseModel):
@@ -239,6 +276,9 @@ class ElectionOut(BaseModel):
     closed_at: datetime | None
     tallied_at: datetime | None
     published_at: datetime | None
+    opens_at: datetime | None
+    closes_at: datetime | None
+    open_to_all: bool
     mix_servers: list[MixServerOut]
     questions: list[QuestionOut]
     voter_count: int
@@ -258,6 +298,9 @@ class ElectionOut(BaseModel):
             closed_at=e.closed_at,
             tallied_at=e.tallied_at,
             published_at=e.published_at,
+            opens_at=svc_ops.utc(e.opens_at),
+            closes_at=svc_ops.utc(e.closes_at),
+            open_to_all=e.open_to_all,
             mix_servers=[
                 MixServerOut(position=m.position, node_id=m.node_id, node=m.node.name) for m in e.mix_servers
             ],
@@ -307,11 +350,17 @@ def list_elections(db: Db, caller: Caller) -> list[ElectionSummary]:
     ]
 
 
-@router.post("/elections", response_model=ElectionOut, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/elections",
+    response_model=ElectionOut,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_creator)],
+)
 def create_election(body: ElectionIn, db: Db, caller: Caller) -> ElectionOut:
     election = errors(
         lambda: svc_ops.create_election(db, body.title, body.description, body.questions, body.mix_servers)
     )
+    election.open_to_all = body.open_to_all
     if caller.account is not None:
         election.managers.append(ElectionManager(account_id=caller.account.id))
     db.commit()
@@ -335,12 +384,65 @@ def update_election(election_id: ManagedId, body: ElectionPatch, db: Db) -> Elec
             questions=body.questions,
             mix_servers=body.mix_servers,
             default_mix_servers=body.use_default_mix_servers,
+            open_to_all=body.open_to_all,
         )
         return election
 
     election = errors(run)
     db.commit()
     return ElectionOut.of(db, election)
+
+
+@router.put("/elections/{election_id}/schedule", response_model=ElectionOut)
+def set_schedule(election_id: ManagedId, body: ScheduleIn, db: Db) -> ElectionOut:
+    """When the scheduler opens and closes the election; null for by hand. See
+    :func:`ballot_box.elections.service.set_schedule` for what may change once frozen."""
+    election, _ = _action(db, election_id, lambda e: svc_ops.set_schedule(e, body.opens_at, body.closes_at))
+    return ElectionOut.of(db, election)
+
+
+@router.post(
+    "/elections/{election_id}/clone",
+    response_model=ElectionOut,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_creator)],
+)
+def clone_election(
+    election_id: ManagedId, db: Db, caller: Caller, body: CloneIn | None = None
+) -> ElectionOut:
+    source = errors(lambda: svc_ops.get_election(db, election_id))
+    clone = svc_ops.clone_election(db, source, body.title if body else None)
+    if caller.account is not None and all(m.account_id != caller.account.id for m in clone.managers):
+        clone.managers.append(ElectionManager(account_id=caller.account.id))
+    db.commit()
+    return ElectionOut.of(db, clone)
+
+
+@router.post("/elections/{election_id}/test-ballots")
+async def test_ballots(election_id: ManagedId, request: Request) -> list[dict[str, Any]]:
+    """The booth simulation's last step: checks ballots (multipart ``q<i>``) as casting
+    would, from the frozen state on. Nothing is stored and nothing reaches the board."""
+    from .voting import read_ballots
+
+    svc: Services = request.app.state.services
+    ballots = await read_ballots(request, svc.settings.max_ballot_bytes)
+
+    def run() -> dict[int, int]:
+        with svc.db() as db:
+            return errors(
+                lambda: svc_ops.check_test_ballots(svc.blobs, svc_ops.get_election(db, election_id), ballots)
+            )
+
+    claimed = await run_in_threadpool(run)
+    return [
+        {
+            "question_index": i,
+            "voter_id": str(v),
+            "bytes": len(ballots[i]),
+            "tracker": hashlib.sha256(ballots[i]).hexdigest(),
+        }
+        for i, v in sorted(claimed.items())
+    ]
 
 
 @router.get("/elections/{election_id}/voters", response_model=list[VoterOut])
@@ -358,6 +460,54 @@ def add_voters(election_id: ManagedId, body: VotersIn, db: Db) -> list[VoterOut]
     return [VoterOut.of(v) for v in voters]
 
 
+MAX_CSV_BYTES = 10 * 1024 * 1024
+
+
+async def _csv(request: Request) -> str:
+    declared = request.headers.get("content-length")
+    if declared is not None and declared.isdigit() and int(declared) > MAX_CSV_BYTES:
+        raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, "the file is too large")
+    data = bytearray()
+    async for chunk in request.stream():
+        data += chunk
+        if len(data) > MAX_CSV_BYTES:
+            raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, "the file is too large")
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "the file is not UTF-8 text") from None
+
+
+Csv = Annotated[str, Depends(_csv)]
+_CSV_BODY = {"requestBody": {"content": {"text/csv": {"schema": {"type": "string"}}}, "required": True}}
+
+
+class CsvImportOut(BaseModel):
+    rows: int
+    added: int
+    """Rows that were not on the list already."""
+
+
+@router.post(
+    "/elections/{election_id}/voters/csv",
+    response_model=CsvImportOut,
+    openapi_extra=_CSV_BODY,
+)
+def add_voters_csv(election_id: ManagedId, text: Csv, db: Db) -> CsvImportOut:
+    """Adds voters from CSV (DRAFT only): ``identity,email,display_name`` rows, optional header."""
+
+    def run() -> CsvImportOut:
+        election = svc_ops.get_election(db, election_id, lock=True)
+        entries = rolls.parse_voters(text)
+        before = len(election.voters)
+        svc_ops.add_voters(db, election, entries)
+        return CsvImportOut(rows=len(entries), added=len(election.voters) - before)
+
+    out = errors(run)
+    db.commit()
+    return out
+
+
 def _action(db: Db, election_id: uuid.UUID, op: Callable[[Election], Any]) -> tuple[Election, Any]:
     def run() -> tuple[Election, Any]:
         election = svc_ops.get_election(db, election_id, lock=True)
@@ -370,7 +520,7 @@ def _action(db: Db, election_id: uuid.UUID, op: Callable[[Election], Any]) -> tu
 
 @router.post("/elections/{election_id}/freeze", response_model=ElectionOut)
 def freeze(election_id: ManagedId, db: Db, queue: Queue) -> ElectionOut:
-    election, _ = _action(db, election_id, svc_ops.freeze)
+    election, _ = _action(db, election_id, lambda e: svc_ops.freeze(db, e))
     queue.keygen(election.id)
     return ElectionOut.of(db, election)
 
@@ -416,7 +566,22 @@ def publish(election_id: ManagedId, db: Db) -> ElectionOut:
 
 class ManagersIn(BaseModel):
     managers: list[str]
-    """Identities, ``provider:external_id``. Each must have logged in once."""
+    """Identities, ``provider:external_id``. Someone who has never logged in
+    gets an account now, which their first login takes over."""
+
+
+def _accounts(db: Session, identities: list[tuple[str, str]]) -> list[Account]:
+    out: dict[tuple[str, str], Account] = {}
+    for provider, external_id in identities:
+        account = db.scalar(
+            select(Account).where(Account.provider == provider, Account.external_id == external_id)
+        )
+        if account is None:
+            account = Account(provider=provider, external_id=external_id)
+            db.add(account)
+        out[(provider, external_id)] = account
+    db.flush()
+    return list(out.values())
 
 
 @router.get("/elections/{election_id}/managers", response_model=list[str])
@@ -429,18 +594,27 @@ def list_managers(election_id: ManagedId, db: Db) -> list[str]:
 def set_managers(election_id: ManagedId, body: ManagersIn, db: Db) -> list[str]:
     """Replaces the election's managers. Allowed in any state: it changes who administers, not the vote."""
     election = errors(lambda: svc_ops.get_election(db, election_id, lock=True))
-    accounts = []
-    for key in body.managers:
-        provider, _, external_id = key.partition(":")
-        account = db.scalar(
-            select(Account).where(Account.provider == provider, Account.external_id == external_id)
-        )
-        if account is None:
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"{key} has never logged in")
-        accounts.append(account)
+    accounts = errors(lambda: _accounts(db, [rolls.parse_identity(key) for key in body.managers]))
+    if not accounts:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "an election needs at least one manager")
     election.managers.clear()
     db.flush()
-    election.managers.extend(ElectionManager(account_id=a.id) for a in {a.id: a for a in accounts}.values())
+    election.managers.extend(ElectionManager(account_id=a.id) for a in accounts)
+    db.commit()
+    return list_managers(election_id, db)
+
+
+@router.post(
+    "/elections/{election_id}/managers/csv",
+    response_model=list[str],
+    openapi_extra=_CSV_BODY,
+)
+def add_managers_csv(election_id: ManagedId, text: Csv, db: Db) -> list[str]:
+    """Adds managers from CSV, one identity per row (optional ``identity`` header). Returns them all."""
+    election = errors(lambda: svc_ops.get_election(db, election_id, lock=True))
+    accounts = errors(lambda: _accounts(db, rolls.parse_identities(text)))
+    have = {m.account_id for m in election.managers}
+    election.managers.extend(ElectionManager(account_id=a.id) for a in accounts if a.id not in have)
     db.commit()
     return list_managers(election_id, db)
 

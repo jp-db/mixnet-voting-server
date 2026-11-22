@@ -116,6 +116,10 @@ class PublicElection(BaseModel):
     title: str
     description: str
     state: str
+    opens_at: datetime | None
+    """When voting is scheduled to open (it may open earlier)."""
+    closes_at: datetime | None
+    """When voting is scheduled to close; ballots are refused from then on."""
     opened_at: datetime | None
     closed_at: datetime | None
     published_at: datetime | None
@@ -181,6 +185,8 @@ class ElectionListItem(BaseModel):
     id: uuid.UUID
     title: str
     state: str
+    opens_at: datetime | None
+    closes_at: datetime | None
     opened_at: datetime | None
     closed_at: datetime | None
 
@@ -192,7 +198,13 @@ def list_elections(db: Db) -> list[ElectionListItem]:
     )
     return [
         ElectionListItem(
-            id=e.id, title=e.title, state=e.state.value, opened_at=e.opened_at, closed_at=e.closed_at
+            id=e.id,
+            title=e.title,
+            state=e.state.value,
+            opens_at=ops.utc(e.opens_at),
+            closes_at=ops.utc(e.closes_at),
+            opened_at=e.opened_at,
+            closed_at=e.closed_at,
         )
         for e in rows
     ]
@@ -214,6 +226,8 @@ def get_election(election_id: ElectionId, db: Db) -> PublicElection:
         title=election.title,
         description=election.description,
         state=election.state.value,
+        opens_at=ops.utc(election.opens_at),
+        closes_at=ops.utc(election.closes_at),
         opened_at=election.opened_at,
         closed_at=election.closed_at,
         published_at=election.published_at,
@@ -380,7 +394,7 @@ def me(election_id: ElectionId, identity: RequiredIdentity, db: Db) -> MeOut:
     return MeOut(eligible=True, voter_id=str(voter.voter_id), cast=_latest_casts(db, election, voter))
 
 
-async def _read_ballots(request: Request, limit: int) -> dict[int, bytes]:
+async def read_ballots(request: Request, limit: int) -> dict[int, bytes]:
     """The ``q<i>`` parts, each at most ``limit`` bytes.
 
     Also put a request size limit in the reverse proxy: this checks the
@@ -419,7 +433,7 @@ async def cast(election_id: ElectionId, request: Request, identity: RequiredIden
     earlier ballot of each question sent (the last valid one counts).
     """
     svc: Services = request.app.state.services
-    ballots = await _read_ballots(request, svc.settings.max_ballot_bytes)
+    ballots = await read_ballots(request, svc.settings.max_ballot_bytes)
     return await run_in_threadpool(_cast, svc, election_id, identity, ballots)
 
 

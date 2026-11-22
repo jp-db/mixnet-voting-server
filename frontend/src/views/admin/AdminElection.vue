@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { useRouter } from 'vue-router';
 
 import {
   api,
@@ -12,10 +13,12 @@ import {
 import MixServersEditor from '../../components/MixServersEditor.vue';
 import QuestionsEditor from '../../components/QuestionsEditor.vue';
 import StateBadge from '../../components/StateBadge.vue';
-import { message, when } from '../../format.ts';
+import { fromLocalInput, message, toLocalInput, when } from '../../format.ts';
+import { session } from '../../session.ts';
 import AdminNav from './AdminNav.vue';
 
 const props = defineProps<{ id: string }>();
+const router = useRouter();
 const election = ref<AdminElection | null>(null);
 const nodes = ref<MixnetNode[]>([]);
 const voters = ref<Voter[]>([]);
@@ -28,10 +31,15 @@ const title = ref('');
 const description = ref('');
 const questions = ref<QuestionInput[]>([]);
 const chain = ref<string[]>([]);
+const openToAll = ref(false);
 const roll = ref('');
 const managersText = ref('');
+const opensAt = ref('');
+const closesAt = ref('');
 
 const draft = computed(() => election.value?.state === 'draft');
+/** The voting period can change until the election closes (with limits once frozen). */
+const schedulable = computed(() => ['draft', 'keygen', 'frozen', 'open'].includes(election.value?.state ?? ''));
 let timer: ReturnType<typeof setInterval> | undefined;
 
 function adopt(e: AdminElection) {
@@ -40,6 +48,9 @@ function adopt(e: AdminElection) {
   description.value = e.description;
   questions.value = e.questions.map((q) => ({ ...q.spec, answers: [...q.spec.answers] }));
   chain.value = e.mix_servers.map((m) => m.node);
+  openToAll.value = e.open_to_all;
+  opensAt.value = toLocalInput(e.opens_at);
+  closesAt.value = toLocalInput(e.closes_at);
   // Key generation and counting run in the background: poll while they do.
   clearInterval(timer);
   if (e.state === 'keygen' || e.state === 'mixing') timer = setInterval(reload, 3000);
@@ -91,43 +102,95 @@ const save = () =>
         description: description.value,
         questions: questions.value,
         mix_servers: chain.value,
+        open_to_all: openToAll.value,
       }),
     ),
   );
 
-/** Lines of ``provider:external_id``, optionally followed by ``,email,display name``. */
-function parseRoll(text: string) {
-  return text
-    .split('\n')
-    .map((l) => l.trim())
-    .filter(Boolean)
-    .map((line) => {
-      const [who, email, ...name] = line.split(',').map((s) => s.trim());
-      const at = who.indexOf(':');
-      if (at <= 0) throw new Error(`“${line}”: write provider:username, e.g. password:alice or cas:jdoe`);
-      return { provider: who.slice(0, at), external_id: who.slice(at + 1), email: email || null, display_name: name.join(',') || null };
-    });
+const saveSchedule = () =>
+  run('Voting period saved.', async () =>
+    adopt(await api.admin.schedule(props.id, fromLocalInput(opensAt.value), fromLocalInput(closesAt.value))),
+  );
+
+const scheduleHelp = computed(() => {
+  switch (election.value?.state) {
+    case 'frozen':
+      return 'The times are public now: the opening can only be brought forward; the closing can move to any future time.';
+    case 'open':
+      return 'Extend the voting time, or end it earlier, by moving the closing time (or close now with the button above).';
+    default:
+      return 'The election opens and closes by itself at these times, once its keys are in. Leave a time empty to open or close it by hand.';
+  }
+});
+
+/** The file picked in a file input, which is reset so the same file can be picked again. */
+function csvFrom(event: Event): File | null {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0] ?? null;
+  input.value = '';
+  return file;
 }
 
-const addVoters = () =>
-  run('Voters added.', async () => {
-    await api.admin.addVoters(props.id, parseRoll(roll.value));
-    voters.value = await api.admin.voters(props.id);
+async function afterRollChange(added: { rows: number; added: number }) {
+  voters.value = await api.admin.voters(props.id);
+  await reload();
+  return `${added.rows} rows read, ${added.added} voters added.`;
+}
+
+async function addVoters() {
+  error.value = '';
+  notice.value = '';
+  try {
+    notice.value = await afterRollChange(await api.admin.addVotersCsv(props.id, roll.value));
     roll.value = '';
-    await reload();
-  });
+  } catch (e) {
+    error.value = message(e);
+  }
+}
+
+async function uploadVoters(event: Event) {
+  const file = csvFrom(event);
+  if (!file) return;
+  error.value = '';
+  notice.value = '';
+  try {
+    notice.value = await afterRollChange(await api.admin.addVotersCsv(props.id, file));
+  } catch (e) {
+    error.value = `${file.name}: ${message(e)}`;
+  }
+}
 
 const saveManagers = () =>
   run('Managers saved.', async () => {
     managers.value = await api.admin.setManagers(props.id, managersText.value.split('\n').map((s) => s.trim()).filter(Boolean));
+    managersText.value = managers.value.join('\n');
   });
+
+async function uploadManagers(event: Event) {
+  const file = csvFrom(event);
+  if (!file) return;
+  await run('Managers added.', async () => {
+    managers.value = await api.admin.addManagersCsv(props.id, file);
+    managersText.value = managers.value.join('\n');
+  });
+}
+
+async function clone() {
+  error.value = '';
+  try {
+    const copy = await api.admin.clone(props.id);
+    await router.push(`/admin/elections/${copy.id}`);
+  } catch (e) {
+    error.value = message(e);
+  }
+}
 
 const ACTIONS: { action: LifecycleAction; label: string; when: string[]; confirm?: string }[] = [
   { action: 'freeze', label: 'Freeze and generate keys', when: ['draft'], confirm: 'Questions, mix servers and the voter roll can no longer change once keys exist (unless you unfreeze before opening). Continue?' },
   { action: 'freeze', label: 'Retry key generation', when: ['keygen'] },
   { action: 'unfreeze', label: 'Back to draft', when: ['keygen'] },
-  { action: 'open', label: 'Open voting', when: ['frozen'] },
-  { action: 'close', label: 'Close voting', when: ['open'], confirm: 'Close the election? No more ballots will be accepted.' },
+  { action: 'open', label: 'Open voting now', when: ['frozen'], confirm: 'Open the election now, before any scheduled opening?' },
+  { action: 'close', label: 'Close voting now', when: ['open'], confirm: 'Close the election now? No more ballots will be accepted.' },
   { action: 'count', label: 'Count', when: ['closed'] },
   { action: 'retry-count', label: 'Retry the count', when: ['mixing'] },
   { action: 'publish', label: 'Publish the results', when: ['tallied'], confirm: 'Publish the results, the transcripts and the mix records?' },
@@ -150,6 +213,8 @@ function act(a: (typeof ACTIONS)[number]) {
       <h1>{{ election.title }}</h1>
       <StateBadge :state="election.state" />
       <RouterLink v-if="!['draft', 'keygen'].includes(election.state)" :to="`/elections/${id}`">Public page</RouterLink>
+      <RouterLink :to="`/admin/elections/${id}/booth`">Try the booth</RouterLink>
+      <button v-if="session.me?.can_create" class="link" @click="clone">Clone</button>
     </div>
     <p v-if="election.error" class="error">{{ election.error }}</p>
 
@@ -162,6 +227,11 @@ function act(a: (typeof ACTIONS)[number]) {
         ><template v-if="election.tallied_at"> · counted {{ when(election.tallied_at) }}</template
         ><template v-if="election.published_at"> · published {{ when(election.published_at) }}</template>
       </p>
+      <p v-if="election.opens_at || election.closes_at" class="muted">
+        Scheduled: <template v-if="election.opens_at">opens {{ when(election.opens_at) }}</template
+        ><template v-if="election.opens_at && election.closes_at">, </template
+        ><template v-if="election.closes_at">closes {{ when(election.closes_at) }}</template>.
+      </p>
       <p v-if="election.state === 'keygen'" class="muted">The mix servers are generating their keys…</p>
       <div class="row">
         <button v-for="a in actions" :key="a.action + a.label" :class="{ primary: !a.action.includes('un') }" @click="act(a)">
@@ -170,10 +240,30 @@ function act(a: (typeof ACTIONS)[number]) {
       </div>
     </div>
 
+    <form v-if="schedulable" class="card stack" @submit.prevent="saveSchedule">
+      <h2>Voting period</h2>
+      <div class="row">
+        <label>
+          <span>Opens</span>
+          <input v-model="opensAt" type="datetime-local" :disabled="election.state === 'open'" />
+        </label>
+        <label><span>Closes</span><input v-model="closesAt" type="datetime-local" /></label>
+      </div>
+      <p class="muted">{{ scheduleHelp }} Times are in this browser's time zone.</p>
+      <div class="row">
+        <button class="primary">Save the voting period</button>
+        <button v-if="draft" type="button" @click="opensAt = ''; closesAt = ''">Clear</button>
+      </div>
+    </form>
+
     <form class="card stack" @submit.prevent="save">
       <h2>Election</h2>
       <label><span>Title</span><input v-model="title" :disabled="!draft" required /></label>
       <label><span>Description</span><textarea v-model="description" :disabled="!draft" rows="2" /></label>
+      <label class="choice">
+        <input v-model="openToAll" type="checkbox" :disabled="!draft" />
+        Open to everyone registered: every account and password login joins the voter roll when the election is frozen
+      </label>
       <h3>Questions</h3>
       <QuestionsEditor v-model="questions" :disabled="!draft" />
       <h3>Mix servers</h3>
@@ -227,22 +317,42 @@ function act(a: (typeof ACTIONS)[number]) {
           </tr>
         </table>
       </div>
+      <p v-if="election.open_to_all" class="muted">
+        Open to everyone registered:
+        <template v-if="draft">the registered accounts join this roll when the election is frozen.</template>
+        <template v-else>the accounts registered at freezing time were added.</template>
+      </p>
       <form v-if="draft" class="stack" @submit.prevent="addVoters">
         <label>
-          <span>Add voters, one per line: <code>provider:username</code>, optionally <code>,email,name</code></span>
-          <textarea v-model="roll" rows="4" placeholder="cas:jdoe,jdoe@example.edu,Jane Doe" class="mono" />
+          <span>
+            Add voters as CSV, one per line: <code>provider:username</code>, optionally <code>,email,name</code>
+            (a header row <code>identity,email,display_name</code> is optional)
+          </span>
+          <textarea v-model="roll" rows="4" placeholder='cas:jdoe,jdoe@example.edu,"Doe, Jane"' class="mono" />
         </label>
-        <button :disabled="!roll.trim()">Add to the roll</button>
+        <div class="row">
+          <button :disabled="!roll.trim()">Add to the roll</button>
+          <label class="button">
+            Upload a CSV file
+            <input type="file" accept=".csv,text/csv,text/plain" hidden @change="uploadVoters" />
+          </label>
+        </div>
       </form>
     </div>
 
     <form class="card stack" @submit.prevent="saveManagers">
       <h2>Managers</h2>
       <label>
-        <span>One identity per line (<code>provider:username</code>); each must have logged in once</span>
+        <span>One identity per line (<code>provider:username</code>). Someone who has never logged in can manage once they do.</span>
         <textarea v-model="managersText" rows="3" class="mono" />
       </label>
-      <button>Save managers</button>
+      <div class="row">
+        <button>Save managers</button>
+        <label class="button">
+          Add from a CSV file
+          <input type="file" accept=".csv,text/csv,text/plain" hidden @change="uploadManagers" />
+        </label>
+      </div>
     </form>
   </template>
 </template>

@@ -13,6 +13,12 @@ export const router = createRouter({
     { path: '/elections/:id/results', component: () => import('./views/ResultsView.vue'), props: true },
     { path: '/admin', component: () => import('./views/admin/AdminElections.vue'), meta: { manage: true } },
     { path: '/admin/elections/:id', component: () => import('./views/admin/AdminElection.vue'), props: true, meta: { manage: true } },
+    {
+      path: '/admin/elections/:id/booth',
+      component: () => import('./views/BoothView.vue'),
+      props: (route) => ({ id: route.params.id, simulate: true }),
+      meta: { manage: true },
+    },
     { path: '/admin/nodes', component: () => import('./views/admin/AdminNodes.vue'), meta: { manage: true } },
     { path: '/admin/accounts', component: () => import('./views/admin/AdminAccounts.vue'), meta: { manage: true } },
     { path: '/:pathMatch(.*)*', component: () => import('./views/NotFound.vue') },

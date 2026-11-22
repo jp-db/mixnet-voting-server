@@ -77,6 +77,12 @@ async function newPage() {
       }
     },
     waitText: (text, timeout) => page.waitFor(`document.body.innerText.includes(${JSON.stringify(text)})`, timeout, `"${text}"`),
+    /** Clicks the element whose whole text is ``text``. */
+    async clickExact(selector, text) {
+      const find = `[...document.querySelectorAll(${JSON.stringify(selector)})].find((el) => el.textContent.trim() === ${JSON.stringify(text)} && !el.disabled)`;
+      await page.waitFor(find, 30000, `${selector} "${text}"`);
+      await evaluate(`${find}.click()`);
+    },
     async click(selector, text) {
       await page.waitFor(`[...document.querySelectorAll(${JSON.stringify(selector)})].some((el) => el.textContent.includes(${JSON.stringify(text)}) && !el.disabled)`, 30000, `${selector} "${text}"`);
       await evaluate(`[...document.querySelectorAll(${JSON.stringify(selector)})].find((el) => el.textContent.includes(${JSON.stringify(text)}) && !el.disabled).click()`);
@@ -102,6 +108,54 @@ async function login(page, user, next) {
 
 const step = (s) => console.log(`- ${s}`);
 const t0 = Date.now();
+
+// Manager: a draft made in the admin pages, its answers added one by one, the roll
+// pasted as CSV, the booth simulated before freezing, and a clone
+if (process.argv[4] !== 'after-vote') {
+  const page = await newPage();
+  await login(page, 'manager1', '/admin');
+  await page.click('button', 'New election');
+  await page.fill('form input[required]', 'UI election');
+  await page.click('button', 'Create draft');
+  await page.waitText('No questions yet');
+  await page.click('button', 'Add a question');
+  await page.fill('fieldset input[required]', 'Lunch');
+  for (const answer of ['Soup', 'Salad', 'Stew']) {
+    await page.fill('input[placeholder="New answer"]', answer);
+    await page.click('button', 'Add answer');
+    await page.waitFor(`[...document.querySelectorAll('ol.answers li')].some((li) => li.textContent.includes(${JSON.stringify(answer)}))`);
+  }
+  await page.clickExact('button', 'Save');
+  await page.waitText('Saved.');
+  await page.fill('textarea.mono', 'password:voter0\npassword:voter1,v1@example.org,"One, Voter"');
+  await page.click('button', 'Add to the roll');
+  await page.waitText('2 rows read, 2 voters added');
+  await page.shot('0-draft');
+  await page.click('a', 'Try the booth');
+  await page.waitText('the simulation checks the answers');
+  await page.click('label.choice', 'Salad');
+  await page.click('button', 'Review');
+  await page.click('button', 'Check and encode');
+  await page.waitText('The answers are valid');
+  if (!(await page.evaluate(`document.body.innerText.includes('[0, 1, 0]')`))) throw new Error('wrong encoding shown');
+  step('manager made a draft in the UI (answers one by one, roll as CSV) and simulated the booth before freezing');
+  await page.click('a', 'Back to the election');
+  await page.click('button', 'Clone');
+  await page.waitText('Copy of UI election');
+  step('manager cloned it');
+
+  // After freezing, the simulation runs evmlr: on the open election, before anyone votes
+  await page.goto(`/admin/elections/${electionId}/booth`);
+  await page.waitText('encrypted with evmlr on the real parameters');
+  await page.click('label.choice', 'Carla');
+  await page.click('label.choice', 'Ezra');
+  await page.click('button', 'Review');
+  await page.click('button', 'Simulate casting');
+  await page.waitText('The ballots would be accepted', 60000);
+  if (!(await page.evaluate(`document.body.innerText.split('ballot box ✓').length === 3`))) throw new Error('simulation checks missing');
+  await page.shot('0-simulation');
+  step('manager simulated casting on the open election: WASM cast and check, ballot box check, nothing kept');
+}
 
 // Voters, each in a fresh browser context
 const plans = [

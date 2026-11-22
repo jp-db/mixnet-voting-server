@@ -8,33 +8,12 @@ from __future__ import annotations
 
 import hashlib
 
-import pytest
-from fastapi import Request
 from fastapi.testclient import TestClient
 
 import evmlr
-from ballot_box.auth import Identity, log_in, log_out
 
-from .conftest import ADMIN_TOKEN
+from .conftest import ADMIN_TOKEN, PUBLIC
 from .test_elections import act, encode, new_election
-
-PUBLIC = "http://localhost:8000"  # Settings.public_url's default
-
-
-@pytest.fixture
-def web(api: TestClient) -> TestClient:
-    """A browser: no admin token, its own cookie jar."""
-    app = api.app
-
-    @app.post("/test/login/{external_id}")
-    def _login(external_id: str, request: Request) -> None:
-        log_in(request, Identity(provider="password", external_id=external_id))
-
-    @app.post("/test/logout")
-    def _logout(request: Request) -> None:
-        log_out(request)
-
-    return TestClient(app, base_url=PUBLIC)
 
 
 def login(web: TestClient, external_id: str) -> None:

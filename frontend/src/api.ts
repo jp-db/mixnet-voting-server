@@ -9,10 +9,23 @@ export class ApiError extends Error {
   }
 }
 
+/** A request body sent as is, with its own content type (e.g. CSV). */
+export class RawBody {
+  readonly data: BodyInit;
+  readonly type: string;
+  constructor(data: BodyInit, type: string) {
+    this.data = data;
+    this.type = type;
+  }
+}
+
 async function request(method: string, path: string, body?: BodyInit | object): Promise<Response> {
   const init: RequestInit = { method, credentials: 'same-origin', headers: {} };
   if (body instanceof FormData) init.body = body;
-  else if (body !== undefined) {
+  else if (body instanceof RawBody) {
+    init.body = body.data;
+    (init.headers as Record<string, string>)['Content-Type'] = body.type;
+  } else if (body !== undefined) {
     init.body = JSON.stringify(body);
     (init.headers as Record<string, string>)['Content-Type'] = 'application/json';
   }
@@ -50,7 +63,10 @@ export interface Me {
   email: string | null;
   display_name: string | null;
   is_admin: boolean;
+  /** May use the management pages (an administrator, a manager, or a manager of some election). */
   can_manage: boolean;
+  /** May create elections. */
+  can_create: boolean;
 }
 
 export interface Provider {
@@ -63,6 +79,8 @@ export interface ElectionListItem {
   id: string;
   title: string;
   state: ElectionState;
+  opens_at: string | null;
+  closes_at: string | null;
   opened_at: string | null;
   closed_at: string | null;
 }
@@ -81,6 +99,10 @@ export interface PublicElection {
   title: string;
   description: string;
   state: ElectionState;
+  /** Scheduled opening; it may open earlier. */
+  opens_at: string | null;
+  /** Scheduled closing; ballots are refused from then on. */
+  closes_at: string | null;
   opened_at: string | null;
   closed_at: string | null;
   published_at: string | null;
@@ -174,6 +196,10 @@ export interface AdminElection {
   closed_at: string | null;
   tallied_at: string | null;
   published_at: string | null;
+  opens_at: string | null;
+  closes_at: string | null;
+  /** Every registered account joins the roll when the election freezes. */
+  open_to_all: boolean;
   mix_servers: { position: number; node_id: string; node: string }[];
   questions: AdminQuestion[];
   voter_count: number;
@@ -200,6 +226,13 @@ export interface Account {
 
 export type QuestionInput = Omit<QuestionSpec, 'kind' | 'encoding' | 'method'> &
   Partial<Pick<QuestionSpec, 'kind' | 'encoding' | 'method'>>;
+
+export interface TestBallotResult {
+  question_index: number;
+  voter_id: string;
+  bytes: number;
+  tracker: string;
+}
 
 export type LifecycleAction = 'freeze' | 'unfreeze' | 'open' | 'close' | 'count' | 'retry-count' | 'publish';
 
@@ -247,12 +280,34 @@ export const api = {
       json<MixnetNode>('POST', a('/mixnet-nodes'), { name, url, token }),
     elections: () => json<{ id: string; title: string; state: ElectionState; created_at: string }[]>('GET', a('/elections')),
     election: (id: string) => json<AdminElection>('GET', a(`/elections/${id}`)),
-    create: (body: { title: string; description: string; questions: QuestionInput[]; mix_servers?: string[] | null }) =>
+    create: (body: { title: string; description: string; questions?: QuestionInput[]; mix_servers?: string[] | null; open_to_all?: boolean }) =>
       json<AdminElection>('POST', a('/elections'), body),
     update: (
       id: string,
-      body: Partial<{ title: string; description: string; questions: QuestionInput[]; mix_servers: string[]; use_default_mix_servers: boolean }>,
+      body: Partial<{
+        title: string;
+        description: string;
+        questions: QuestionInput[];
+        mix_servers: string[];
+        use_default_mix_servers: boolean;
+        open_to_all: boolean;
+      }>,
     ) => json<AdminElection>('PATCH', a(`/elections/${id}`), body),
+    /** ISO times, or null for by hand. */
+    schedule: (id: string, opens_at: string | null, closes_at: string | null) =>
+      json<AdminElection>('PUT', a(`/elections/${id}/schedule`), { opens_at, closes_at }),
+    clone: (id: string, title?: string) => json<AdminElection>('POST', a(`/elections/${id}/clone`), title ? { title } : {}),
+    /** CSV rows ``identity,email,display_name`` (optional header). */
+    addVotersCsv: (id: string, csv: BodyInit) =>
+      json<{ rows: number; added: number }>('POST', a(`/elections/${id}/voters/csv`), new RawBody(csv, 'text/csv')),
+    addManagersCsv: (id: string, csv: BodyInit) =>
+      json<string[]>('POST', a(`/elections/${id}/managers/csv`), new RawBody(csv, 'text/csv')),
+    /** Checks simulated ballots as casting would; the ballot box keeps nothing. */
+    testBallots: (id: string, ballots: Map<number, Uint8Array<ArrayBuffer>>) => {
+      const form = new FormData();
+      for (const [index, ballot] of ballots) form.append(`q${index}`, new Blob([ballot]), `q${index}`);
+      return json<TestBallotResult[]>('POST', a(`/elections/${id}/test-ballots`), form);
+    },
     voters: (id: string) => json<Voter[]>('GET', a(`/elections/${id}/voters`)),
     addVoters: (id: string, voters: { provider: string; external_id: string; email?: string | null; display_name?: string | null }[]) =>
       json<Voter[]>('POST', a(`/elections/${id}/voters`), { voters }),

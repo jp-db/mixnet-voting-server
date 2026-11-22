@@ -42,6 +42,13 @@ export async function cast(pp: Uint8Array, voterId: string, vote: number[]) {
   return { ballot: r.ballot, tracker: r.tracker };
 }
 
+/** The bulletin board's check of a ballot. Resolves to the voter id it claims; rejects if it is invalid. */
+export async function checkBallot(pp: Uint8Array, ballot: Uint8Array) {
+  const r = await call({ op: 'check', pp, ballot });
+  if (r.op !== 'check') throw new Error('unexpected worker reply');
+  return r.voterId;
+}
+
 /** The public verification of a count. Resolves to the votes; rejects if the count does not verify. */
 export async function verify(pp: Uint8Array, ballots: Uint8Array[], transcript: Uint8Array) {
   const r = await call({ op: 'verify', pp, ballots, transcript });

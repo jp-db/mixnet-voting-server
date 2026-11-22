@@ -92,6 +92,18 @@ services:
       migrate: { condition: service_completed_successfully }
       redis: { condition: service_healthy }
 
+  # Opens and closes elections at their scheduled times. Run exactly one.
+  beat:
+    build:
+      context: ..
+      dockerfile: deploy/python.Dockerfile
+      args: { PACKAGE: ballot-box }
+    command: celery -A ballot_box.worker beat --loglevel=info --schedule /tmp/celerybeat-schedule
+    environment: *ballot-box-env
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+
   mixnet-node-0:
     <<: *mixnet-node
     environment:

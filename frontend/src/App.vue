@@ -24,6 +24,7 @@ async function onLogout() {
     </nav>
   </header>
   <main class="page">
-    <RouterView />
+    <!-- Keyed by path: a view loads its data when mounted, so another election needs a fresh one. -->
+    <RouterView :key="$route.path" />
   </main>
 </template>

@@ -16,10 +16,12 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from fastapi import Request
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from ballot_box.app import create_app
+from ballot_box.auth import Identity, log_in, log_out
 from ballot_box.config import Settings
 from ballot_box.db import make_engine, make_sessionmaker, migrate
 from ballot_box.elections.counting import Step, advance_count
@@ -170,3 +172,22 @@ def api(settings: Settings, services: Services, queue: SyncQueue) -> Iterator[Te
     app = create_app(settings, services=services, queue=queue)
     with TestClient(app, headers={"Authorization": f"Bearer {ADMIN_TOKEN}"}) as client:
         yield client
+
+
+PUBLIC = "http://localhost:8000"  # Settings.public_url's default
+
+
+@pytest.fixture
+def web(api: TestClient) -> TestClient:
+    """A browser: no admin token, its own cookie jar."""
+    app = api.app
+
+    @app.post("/test/login/{external_id}")
+    def _login(external_id: str, request: Request) -> None:
+        log_in(request, Identity(provider="password", external_id=external_id))
+
+    @app.post("/test/logout")
+    def _logout(request: Request) -> None:
+        log_out(request)
+
+    return TestClient(app, base_url=PUBLIC)

@@ -59,6 +59,9 @@ class Settings(BaseSettings):
     mix_poll_seconds: float = Field(default=2.0, gt=0)
     """How often the counting task polls a mixnet node for its job."""
 
+    schedule_seconds: float = Field(default=15.0, gt=0)
+    """How often the scheduler (``celery beat``) opens and closes elections whose time has come."""
+
     @model_validator(mode="after")
     def _check_providers(self) -> Settings:
         unknown = set(self.auth_providers) - {"password", "cas"}

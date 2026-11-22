@@ -216,8 +216,9 @@ def test_configured_admins_and_granted_managers(auth_app, admin):
     )
     assert r.json() == ["password:carol", "password:mallory"]
     assert mallory.get(f"/api/admin/elections/{e['id']}").status_code == 200
-    r = carol.put(f"/api/admin/elections/{e['id']}/managers", json={"managers": ["cas:ghost"]})
-    assert r.status_code == 422
+    for bad in (["ghost"], ["ldap:ghost"], []):
+        r = carol.put(f"/api/admin/elections/{e['id']}/managers", json={"managers": bad})
+        assert r.status_code == 422, bad
     assert carol.get("/api/admin/accounts").status_code == 403
     node = {"name": "x", "url": "http://x", "token": "t" * 40}
     assert carol.post("/api/admin/mixnet-nodes", json=node).status_code == 403
@@ -229,6 +230,34 @@ def test_configured_admins_and_granted_managers(auth_app, admin):
 
     r = boss.patch(f"/api/admin/accounts/{ids['cas:boss']}", json={"is_admin": False})
     assert r.status_code == 409
+
+
+def test_election_managers_need_no_role_and_may_not_have_logged_in(auth_app, admin):
+    e = admin.post("/api/admin/elections", json={"title": "Club"}).json()
+    r = admin.post(
+        f"/api/admin/elections/{e['id']}/managers/csv",
+        content="identity\ncas:dora\npassword:erin\n",
+        headers={"Content-Type": "text/csv"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json() == ["cas:dora", "password:erin"]
+
+    # Dora has never logged in; when she does, she manages that election but may not create others.
+    dora = browser(auth_app)
+    cas_login(auth_app, dora, "dora")
+    me = dora.get("/auth/me").json()
+    assert me["can_manage"] and not me["can_create"] and not me["is_admin"]
+    assert [x["id"] for x in dora.get("/api/admin/elections").json()] == [e["id"]]
+    assert dora.patch(f"/api/admin/elections/{e['id']}", json={"title": "Club 2"}).status_code == 200
+    assert dora.post("/api/admin/elections", json={"title": "Mine"}).status_code == 403
+    assert dora.post(f"/api/admin/elections/{e['id']}/clone").status_code == 403
+
+    r = admin.post(
+        f"/api/admin/elections/{e['id']}/managers/csv",
+        content="nobody\n",
+        headers={"Content-Type": "text/csv"},
+    )
+    assert r.status_code == 422 and "line 1" in r.json()["detail"]
 
 
 def test_cross_site_admin_post_with_a_cookie_is_refused(auth_app):

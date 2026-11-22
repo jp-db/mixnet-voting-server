@@ -82,3 +82,5 @@ th { font-weight: 600; font-size: 0.9em; color: var(--muted); }
 
 .choice { display: flex; gap: 0.6rem; align-items: center; padding: 0.4rem 0; }
 .bar { height: 0.5rem; background: var(--accent); border-radius: 999px; }
+.answers { margin: 0.4rem 0; padding-left: 1.5rem; }
+.answers li { padding: 0.15rem 0; }

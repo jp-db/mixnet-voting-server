@@ -47,5 +47,19 @@ def test_keygen_through_celery(monkeypatch, settings, services, queue):
     with TestClient(app, headers={"Authorization": f"Bearer {ADMIN_TOKEN}"}) as api:
         q = {"title": "Q", "answers": ["a", "b"]}
         e = api.post("/api/admin/elections", json={"title": "E", "questions": [q]}).json()
+        api.post(
+            f"/api/admin/elections/{e['id']}/voters",
+            json={"voters": [{"provider": "cas", "external_id": "v"}]},
+        )
         assert api.post(f"/api/admin/elections/{e['id']}/freeze").json()["state"] == "keygen"
         assert api.get(f"/api/admin/elections/{e['id']}").json()["state"] == "frozen"
+
+        # The scheduler's task, as beat triggers it.
+        schedule = worker.app.conf.beat_schedule["open-and-close-elections"]
+        assert schedule["task"] == worker.schedule_task.name
+        api.put(
+            f"/api/admin/elections/{e['id']}/schedule",
+            json={"opens_at": "2000-01-01T00:00:00Z", "closes_at": None},
+        )
+        worker.schedule_task.delay()
+        assert api.get(f"/api/admin/elections/{e['id']}").json()["state"] == "open"

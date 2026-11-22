@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # End-to-end test against a throwaway stack: three mixnet nodes, the ballot
-# box, a Celery worker, Redis and the Vite dev server, all on this machine.
+# box, a Celery worker and the scheduler (beat), Redis and the Vite dev server, all on this machine.
 # Runs scripts/smoke_test.py (HTTP only), then scripts/browser_test.mjs
 # (headless Chromium through the real pages) when the WebAssembly module is
 # built and Chromium is found. Stops only what it started.
@@ -69,11 +69,13 @@ export BALLOT_BOX_REDIS_URL=$E2E_REDIS_URL
 export BALLOT_BOX_BLOB_DIR=$WORK/blobs
 export BALLOT_BOX_PUBLIC_URL=http://localhost:5173
 export BALLOT_BOX_MIX_POLL_SECONDS=0.5
+export BALLOT_BOX_SCHEDULE_SECONDS=1
 export BALLOT_BOX_MIXNET_NODES="${nodes%,}]"
 
 uv run --no-sync python -m ballot_box.db
 start ballot-box uv run --no-sync uvicorn ballot_box.app:create_app --factory --port 8000
 start worker uv run --no-sync celery -A ballot_box.worker worker --loglevel=info --concurrency=2
+start beat uv run --no-sync celery -A ballot_box.worker beat --loglevel=info --schedule "$WORK/beat-schedule"
 start vite bash -c "cd frontend && exec npx vite --port 5173 --strictPort"
 
 for j in 0 1 2; do wait_http "http://127.0.0.1:811$j/health" "mixnet node $j"; done

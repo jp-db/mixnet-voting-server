@@ -77,7 +77,9 @@ administrator creates password logins. Voting needs no role: the voter roll
 of each election lists who may vote, by provider and username.
 
 Administrators may do everything; managers may create elections and manage
-those they are a manager of. The first administrator comes from
+those they are a manager of. Someone named a manager of an election (by
+identity, or from a CSV file) manages it without the right to create
+elections, even if they have not logged in yet. The first administrator comes from
 `BALLOT_BOX_ADMIN_IDENTITIES` (e.g. `["cas:jdoe"]`, made admin on login) or
 the command line:
 
@@ -102,6 +104,24 @@ result and listed with the reason. The booth's TypeScript encoder and the
 Python one are both checked against `test-vectors/encodings.json`
 (regenerate with `python -m ballot_box.questions.vectors` when adding cases).
 
+A new election is a draft with only a title: questions (each answer entered
+separately), mix servers, the voter roll and the voting period are set on its
+page, and it cannot be frozen without questions and voters. Voters can be
+pasted or uploaded as CSV (`identity,email,display_name`, header optional),
+or the election can be open to everyone registered: every account and
+password login joins the roll when it freezes. Elections can be cloned
+(questions, mix chain, roll and managers; not the schedule or anything
+cast). "Try the booth" rehearses voting: before freezing it checks and
+shows the encoding; afterwards it also encrypts with evmlr in the browser,
+checks the ballots there and on the ballot box, and keeps nothing.
+
+With an opening and closing time, the scheduler (`celery -A ballot_box.worker
+beat`, run exactly one; every `BALLOT_BOX_SCHEDULE_SECONDS`) opens and closes
+the election; ballots are refused from the closing time on, even before it
+runs. Once frozen, the opening can only be brought forward and the closing
+moved to any future time (extend or shorten); "open now" and "close now"
+still work.
+
 Voters use `/api/elections/{id}`: the public election, each question's
 parameters and bulletin board, ballot trackers, `me` and casting (one
 multipart request with a part per question, stored all or nothing). Results,
@@ -110,7 +130,7 @@ transcripts and mix records become public when the manager publishes them.
 ## End-to-end tests
 
 `make e2e` starts a throwaway stack on this machine (three mixnet nodes, the
-ballot box, a Celery worker, Redis in Docker, the Vite dev server) and runs
+ballot box, a Celery worker and the scheduler, Redis in Docker, the Vite dev server) and runs
 one election through it: `scripts/smoke_test.py` over HTTP, then, when the
 WebAssembly module is built and Chromium is installed,
 `scripts/browser_test.mjs` through the real pages in headless Chromium

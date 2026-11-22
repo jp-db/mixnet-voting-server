@@ -112,18 +112,25 @@ class MeOut(BaseModel):
     display_name: str | None
     is_admin: bool
     can_manage: bool
+    """May use the management pages: an administrator, a manager, or a manager of some election."""
+    can_create: bool
+    """May create elections."""
 
 
 @router.get("/me", response_model=MeOut)
 def me(identity: RequiredIdentity, db: Db) -> MeOut:
+    from .admin import manages_any
+
     account = find_account(db, identity)
+    can_create = bool(account and (account.can_manage or account.is_admin))
     return MeOut(
         provider=identity.provider,
         external_id=identity.external_id,
         email=identity.email,
         display_name=identity.display_name,
         is_admin=bool(account and account.is_admin),
-        can_manage=bool(account and (account.can_manage or account.is_admin)),
+        can_manage=can_create or bool(account and manages_any(db, account)),
+        can_create=can_create,
     )
 
 

@@ -5,6 +5,8 @@ election and builds the parameters. ``count_task`` counts one question: it
 does one step (:func:`ballot_box.elections.counting.advance_count`) and
 enqueues itself again, at once or after ``mix_poll_seconds`` while a node
 mixes. The questions of an election are counted in parallel.
+``schedule_task`` opens and closes elections at their scheduled times; run
+exactly one ``celery -A ballot_box.worker beat`` to trigger it.
 
 Steps are idempotent and the state lives in the database, so a task that is
 lost, redelivered or run twice does no harm. evmlr calls are serialised
@@ -22,6 +24,7 @@ from celery import Celery, Task
 from .config import get_settings
 from .elections.counting import Step, advance_count, fail_count
 from .elections.keygen import run_keygen
+from .elections.service import run_schedule
 from .mixnet import MixnetUnavailable
 from .models import Election
 from .services import Services
@@ -40,6 +43,13 @@ def make_celery() -> Celery:
         task_serializer="json",
         accept_content=["json"],
         task_ignore_result=True,  # state lives in the database
+        beat_schedule={
+            "open-and-close-elections": {
+                "task": "ballot_box.worker.schedule_task",
+                "schedule": settings.schedule_seconds,
+                "options": {"expires": settings.schedule_seconds},  # a missed tick is not worth running late
+            }
+        },
     )
     return app
 
@@ -89,3 +99,9 @@ def count_task(self: Task[Any, Any], question_id: str) -> None:
         count_task.delay(question_id)
     elif step is Step.WAIT:
         count_task.apply_async((question_id,), countdown=svc.settings.mix_poll_seconds)
+
+
+@app.task(name="ballot_box.worker.schedule_task")
+def schedule_task() -> None:
+    with services().db.begin() as s:
+        run_schedule(s)

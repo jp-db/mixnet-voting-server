@@ -47,7 +47,9 @@ async function checkTracker() {
     <p class="muted">
       {{ election.voters }} voters on the roll.
       <template v-if="election.opened_at">Opened {{ when(election.opened_at) }}.</template>
+      <template v-else-if="election.opens_at">Voting opens {{ when(election.opens_at) }}.</template>
       <template v-if="election.closed_at"> Closed {{ when(election.closed_at) }}.</template>
+      <template v-else-if="election.closes_at"> Voting closes {{ when(election.closes_at) }}.</template>
     </p>
 
     <div class="card stack" v-if="election.state === 'open'">

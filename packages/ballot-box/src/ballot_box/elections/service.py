@@ -20,7 +20,19 @@ import evmlr
 from voting_common.blobstore import BlobStore
 
 from ..mixnet.nodes import default_nodes
-from ..models import Ballot, Election, ElectionMixServer, MixnetNode, Question, Tally, TallyState, Voter
+from ..models import (
+    Account,
+    Ballot,
+    Election,
+    ElectionManager,
+    ElectionMixServer,
+    MixnetNode,
+    PasswordCredential,
+    Question,
+    Tally,
+    TallyState,
+    Voter,
+)
 from ..questions import QuestionSpec, crypto_id
 from .state import ElectionState, InvalidTransition, transition
 
@@ -39,6 +51,13 @@ class Invalid(ValueError):
 
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+def utc(when: datetime | None) -> datetime | None:
+    """``when`` in UTC. A naive time (SQLite gives them back) is taken as UTC already."""
+    if when is None:
+        return None
+    return when.replace(tzinfo=UTC) if when.tzinfo is None else when.astimezone(UTC)
 
 
 def _require(election: Election, *states: ElectionState) -> None:
@@ -68,10 +87,12 @@ def get_election(
 # --- configuration (DRAFT) ---------------------------------------------------------------
 
 
-def _resolve_nodes(session: Session, names: Sequence[str] | None) -> list[MixnetNode]:
+def _resolve_nodes(
+    session: Session, names: Sequence[str] | None, *, allow_none: bool = False
+) -> list[MixnetNode]:
     if names is None:
         nodes = default_nodes(session)
-        if not nodes:
+        if not nodes and not allow_none:
             raise Invalid("no default mixnet nodes are configured: name the mix servers")
         return nodes
     if not names:
@@ -85,19 +106,21 @@ def _resolve_nodes(session: Session, names: Sequence[str] | None) -> list[Mixnet
     return [found[n] for n in names]
 
 
-def set_mix_servers(session: Session, election: Election, names: Sequence[str] | None) -> None:
-    """The mix chain, in order. ``None`` picks the default nodes in their default order."""
+def set_mix_servers(
+    session: Session, election: Election, names: Sequence[str] | None, *, allow_none: bool = False
+) -> None:
+    """The mix chain, in order. ``None`` picks the default nodes in their default order
+    (``allow_none``: an empty chain if there are none, to be set before freezing)."""
     _require(election, ElectionState.DRAFT)
-    nodes = _resolve_nodes(session, names)
+    nodes = _resolve_nodes(session, names, allow_none=allow_none)
     election.mix_servers.clear()
     session.flush()  # the old rows' primary keys are reused
     election.mix_servers.extend(ElectionMixServer(position=j, node=n) for j, n in enumerate(nodes))
 
 
 def set_questions(election: Election, specs: Sequence[QuestionSpec]) -> None:
+    """Replaces the questions. A draft may have none yet; freezing needs at least one."""
     _require(election, ElectionState.DRAFT)
-    if not specs:
-        raise Invalid("an election needs at least one question")
     election.questions.clear()
     election.questions.extend(
         Question(index=i, spec=spec.model_dump(mode="json")) for i, spec in enumerate(specs)
@@ -108,15 +131,50 @@ def create_election(
     session: Session,
     title: str,
     description: str,
-    questions: Sequence[QuestionSpec],
+    questions: Sequence[QuestionSpec] = (),
     mix_servers: Sequence[str] | None = None,
 ) -> Election:
+    """A new draft. Questions can come later; the mix chain defaults to the default nodes."""
     election = Election(title=title, description=description, state=ElectionState.DRAFT)
     session.add(election)
     set_questions(election, questions)
-    set_mix_servers(session, election, mix_servers)
+    set_mix_servers(session, election, mix_servers, allow_none=True)
     session.flush()
     return election
+
+
+def clone_election(session: Session, source: Election, title: str | None = None) -> Election:
+    """A new draft with ``source``'s configuration, in any state of ``source``.
+
+    It copies the description, questions, mix chain, managers, the open-to-all
+    setting and the roll as entered (voters added at freeze for an election
+    open to all are not copied: the clone adds the accounts registered at its
+    own freeze). Voters get new random ids. The schedule, keys, ballots and
+    results are not copied.
+    """
+    clone = Election(
+        title=title or f"Copy of {source.title}"[:200],
+        description=source.description,
+        state=ElectionState.DRAFT,
+        open_to_all=source.open_to_all,
+    )
+    session.add(clone)
+    clone.questions.extend(Question(index=q.index, spec=dict(q.spec)) for q in source.questions)
+    clone.mix_servers.extend(
+        ElectionMixServer(position=m.position, node_id=m.node_id) for m in source.mix_servers
+    )
+    clone.managers.extend(ElectionManager(account_id=m.account_id) for m in source.managers)
+    session.flush()
+    add_voters(
+        session,
+        clone,
+        [
+            VoterEntry(v.provider, v.external_id, v.email, v.display_name)
+            for v in source.voters
+            if not v.from_registry
+        ],
+    )
+    return clone
 
 
 def update_election(
@@ -128,8 +186,11 @@ def update_election(
     questions: Sequence[QuestionSpec] | None = None,
     mix_servers: Sequence[str] | None = None,
     default_mix_servers: bool = False,
+    open_to_all: bool | None = None,
 ) -> None:
     _require(election, ElectionState.DRAFT)
+    if open_to_all is not None:
+        election.open_to_all = open_to_all
     if title is not None:
         election.title = title
     if description is not None:
@@ -138,6 +199,84 @@ def update_election(
         set_questions(election, questions)
     if mix_servers is not None or default_mix_servers:
         set_mix_servers(session, election, mix_servers)
+
+
+# --- the voting schedule --------------------------------------------------------------------
+
+
+def set_schedule(
+    election: Election, opens_at: datetime | None, closes_at: datetime | None, now: datetime | None = None
+) -> None:
+    """When the scheduler opens and closes the election (None: by hand).
+
+    In DRAFT and KEYGEN anything goes. Once frozen the times are public, so
+    they may only move in the voters' favour or to end early: the opening
+    can be brought forward (not postponed or removed), and until the
+    election closes the closing can be moved to any future time (an
+    extension, or an earlier end) or removed. Opening or closing at once
+    is the ``open`` and ``close`` actions.
+    """
+    now = now or _now()
+    opens_at, closes_at = utc(opens_at), utc(closes_at)
+    state = election.state
+    if state not in (ElectionState.DRAFT, ElectionState.KEYGEN, ElectionState.FROZEN, ElectionState.OPEN):
+        raise WrongState(f"the election is {state.value}: its voting period is over")
+    current_open = utc(election.opens_at)
+    if opens_at != current_open:
+        if state is ElectionState.OPEN:
+            raise WrongState("the election is already open")
+        if state is ElectionState.FROZEN and (
+            opens_at is None or (current_open is not None and opens_at > current_open)
+        ):
+            raise Invalid("once frozen, the opening can only be brought forward")
+    if closes_at != utc(election.closes_at) and closes_at is not None and closes_at <= now:
+        raise Invalid("the closing time must be in the future: to close now, close the election")
+    start = opens_at if state is not ElectionState.OPEN else utc(election.opened_at)
+    if closes_at is not None and start is not None and closes_at <= start:
+        raise Invalid("the election must close after it opens")
+    election.opens_at, election.closes_at = opens_at, closes_at
+
+
+def voting_closed(election: Election, now: datetime | None = None) -> bool:
+    """The scheduled closing time has passed (whether or not the scheduler has closed it yet)."""
+    closes_at = utc(election.closes_at)
+    return closes_at is not None and (now or _now()) >= closes_at
+
+
+@dataclass(frozen=True)
+class ScheduleRun:
+    opened: list[uuid.UUID]
+    closed: list[uuid.UUID]
+
+
+def run_schedule(session: Session, now: datetime | None = None) -> ScheduleRun:
+    """Opens the frozen elections whose opening time has come and closes the
+    open ones whose closing time has. Idempotent: the scheduler calls it every
+    few seconds. A frozen election whose closing time passed before it could
+    open (a long key generation) stays frozen, with an error for its manager.
+    """
+    now = now or _now()
+    opened, closed = [], []
+    due = select(Election.id).where(
+        ((Election.state == ElectionState.FROZEN) & (Election.opens_at <= now))
+        | ((Election.state == ElectionState.OPEN) & (Election.closes_at <= now))
+    )
+    for election_id in list(session.scalars(due)):
+        election = get_election(session, election_id, lock=True)  # the state may have moved meanwhile
+        if election.state is ElectionState.FROZEN and (utc(election.opens_at) or now) <= now:
+            if voting_closed(election, now):
+                election.error = "the closing time passed before the election could open: reschedule it"
+                continue
+            open_election(election)
+            opened.append(election.id)
+        if election.state is ElectionState.OPEN and voting_closed(election, now):
+            close_election(election)
+            closed.append(election.id)
+    session.flush()
+    return ScheduleRun(opened=opened, closed=closed)
+
+
+# --- the voter roll -------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -162,7 +301,9 @@ def _new_voter_id(taken: set[int]) -> int:
             return vid
 
 
-def add_voters(session: Session, election: Election, entries: Sequence[VoterEntry]) -> list[Voter]:
+def add_voters(
+    session: Session, election: Election, entries: Sequence[VoterEntry], *, from_registry: bool = False
+) -> list[Voter]:
     """Adds voters to the roll; an entry already on it is returned unchanged.
 
     Each new voter gets a random evmlr voter id: ids carry no information
@@ -182,6 +323,7 @@ def add_voters(session: Session, election: Election, entries: Sequence[VoterEntr
                 external_id=entry.external_id,
                 email=entry.email,
                 display_name=entry.display_name,
+                from_registry=from_registry,
             )
             election.voters.append(voter)
             existing[key] = voter
@@ -190,11 +332,27 @@ def add_voters(session: Session, election: Election, entries: Sequence[VoterEntr
     return out
 
 
+def registered_identities(session: Session) -> list[VoterEntry]:
+    """Everyone registered: every account (whoever has logged in, or was named a
+    manager) and every password login, even one not used yet."""
+    entries = {
+        (a.provider, a.external_id): VoterEntry(a.provider, a.external_id, a.email, a.display_name)
+        for a in session.scalars(select(Account))
+    }
+    for c in session.scalars(select(PasswordCredential)):
+        entries.setdefault(
+            ("password", c.username), VoterEntry("password", c.username, c.email, c.display_name)
+        )
+    return [entries[k] for k in sorted(entries)]
+
+
 # --- lifecycle ------------------------------------------------------------------------------
 
 
-def freeze(election: Election) -> None:
-    """DRAFT -> KEYGEN: fixes each question's evmlr election id. Then enqueue key generation.
+def freeze(session: Session, election: Election, now: datetime | None = None) -> None:
+    """DRAFT -> KEYGEN: fixes each question's evmlr election id and, for an
+    election open to all, adds every registered identity to the roll. Then
+    enqueue key generation.
 
     Also accepted in KEYGEN, to retry a key generation that failed.
     """
@@ -206,6 +364,12 @@ def freeze(election: Election) -> None:
         raise Invalid("an election needs at least one question")
     if not election.mix_servers:
         raise Invalid("an election needs at least one mix server")
+    if voting_closed(election, now):
+        raise Invalid("the closing time has passed: reschedule it first")
+    if election.open_to_all:
+        add_voters(session, election, registered_identities(session), from_registry=True)
+    if not election.voters:
+        raise Invalid("the voter roll is empty")
     for q in election.questions:
         q.crypto_id = crypto_id(election.id, q.index, QuestionSpec.model_validate(q.spec))
         q.params_key = None
@@ -224,6 +388,7 @@ def unfreeze(election: Election) -> None:
         q.crypto_id = None
         q.params_key = None
         q.keys.clear()
+    election.voters[:] = [v for v in election.voters if not v.from_registry]
 
 
 def open_election(election: Election) -> None:
@@ -311,6 +476,8 @@ def cast_ballots(
     board entries; a ballot's blob key (its SHA-256) is the voter's tracker.
     """
     _require(election, ElectionState.OPEN)
+    if voting_closed(election):
+        raise WrongState("voting has closed")
     if voter.election_id != election.id:
         raise Invalid("the voter belongs to another election")
     if not ballots:
@@ -337,6 +504,24 @@ def cast_ballot(
     if question.election_id != election.id:
         raise Invalid("the question belongs to another election")
     return cast_ballots(session, blobs, election, voter, {question.index: ballot})[0]
+
+
+def check_test_ballots(blobs: BlobStore, election: Election, ballots: Mapping[int, bytes]) -> dict[int, int]:
+    """Checks ballots as casting would, without putting them anywhere: for the
+    manager's booth simulation. Returns the voter id each one claims."""
+    if election.state in (ElectionState.DRAFT, ElectionState.KEYGEN):
+        raise WrongState("the election has no public parameters until its keys are in")
+    questions = {q.index: q for q in election.questions}
+    out = {}
+    for index, ballot in sorted(ballots.items()):
+        question = questions.get(index)
+        if question is None:
+            raise Invalid(f"no such question: {index}")
+        try:
+            out[index] = evmlr.check_ballot(blobs.get(question.params_key or ""), ballot)
+        except evmlr.EvmlrError as e:
+            raise Invalid(f"question {index}: the ballot does not verify: {e.status.name}") from e
+    return out
 
 
 def board_ballots(session: Session, question_id: uuid.UUID) -> list[str]:

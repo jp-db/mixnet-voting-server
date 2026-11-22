@@ -128,6 +128,13 @@ class Election(Base):
     tallied_at: Mapped[datetime | None]
     published_at: Mapped[datetime | None]
 
+    opens_at: Mapped[datetime | None]
+    """When the scheduler opens the election (once frozen). None: the manager opens it."""
+    closes_at: Mapped[datetime | None]
+    """When the scheduler closes it; casting stops then even if the scheduler is late."""
+    open_to_all: Mapped[bool] = mapped_column(default=False)
+    """Every registered account and password login may vote: they join the roll at freeze."""
+
     questions: Mapped[list[Question]] = relationship(
         back_populates="election", order_by="Question.index", cascade="all, delete-orphan"
     )
@@ -208,6 +215,9 @@ class Voter(Base):
     """Matched against the :class:`ballot_box.auth.Identity` of whoever logs in."""
     email: Mapped[str | None] = mapped_column(String(320))
     display_name: Mapped[str | None] = mapped_column(String(200))
+    from_registry: Mapped[bool] = mapped_column(default=False)
+    """Added at freeze because the election is open to all registered accounts;
+    removed again if it goes back to draft."""
 
     election: Mapped[Election] = relationship(back_populates="voters")
 
