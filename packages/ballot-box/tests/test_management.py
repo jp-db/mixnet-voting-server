@@ -10,15 +10,13 @@ from hashlib import sha256
 import pytest
 
 import evmlr
-from ballot_box.auth import password as password_auth
-from ballot_box.auth.accounts import record_login
-from ballot_box.auth.base import Identity
 from ballot_box.elections import rolls
 from ballot_box.elections import service as ops
 from ballot_box.models import Election
 
 from .conftest import node_token
 from .test_elections import COUNCIL, PRESIDENT, act, cast, encode, new_election
+from .test_voting import booth
 
 
 def admin_election(api, e: dict) -> dict:
@@ -84,7 +82,7 @@ def test_a_draft_starts_without_questions_but_cannot_freeze_without_them(api):
 def test_freezing_needs_voters(api):
     e = new_election(api, voters=0)
     r = api.post(f"/api/admin/elections/{e['id']}/freeze")
-    assert r.status_code == 422 and "roll" in r.json()["detail"]
+    assert r.status_code == 422 and "nobody can vote" in r.json()["detail"]
 
 
 # --- the schedule -------------------------------------------------------------------------------
@@ -195,33 +193,69 @@ def test_clone_copies_the_configuration_not_the_vote(api, queue, services):
 # --- open to all registered accounts ------------------------------------------------------------
 
 
-def test_an_election_open_to_all_takes_the_registered_accounts_at_freeze(api, queue, services):
-    with services.db.begin() as s:
-        record_login(s, Identity("cas", "jdoe", email="jdoe@example.edu"), [])
-        password_auth.set_password(s, "alice", "correct horse battery")
-    e = new_election(api, voters=1, open_to_all=True)
-    assert e["open_to_all"] and e["voter_count"] == 1
+def login_as(web, provider: str, external_id: str) -> None:
+    assert web.post(f"/test/login-as/{provider}/{external_id}").status_code == 200
 
-    e = act(api, e, "freeze")
-    roll = {
-        (v["provider"], v["external_id"]) for v in api.get(f"/api/admin/elections/{e['id']}/voters").json()
-    }
-    assert roll == {("password", "voter0"), ("cas", "jdoe"), ("password", "alice")}
 
-    # Back to draft: the registry's entries leave the roll, the manager's stay.
-    e = act(api, e, "unfreeze")
-    assert e["voter_count"] == 1
-    assert api.post(f"/api/admin/elections/{e['id']}/clone").json()["voter_count"] == 1
-
-    with services.db.begin() as s:
-        record_login(s, Identity("cas", "late"), [])
-    e = act(api, e, "freeze")
+def test_an_election_open_to_a_login_method_takes_voters_after_freezing(api, queue, web):
+    e = new_election(api, voters=1)
+    r = api.patch(f"/api/admin/elections/{e['id']}", json={"open_to": ["ldap"]})
+    assert r.status_code == 422
+    e = api.patch(f"/api/admin/elections/{e['id']}", json={"open_to": ["ufsc"]}).json()
+    assert e["open_to"] == ["ufsc"]
+    act(api, e, "freeze")
     queue.drain()
-    assert admin_election(api, e)["voter_count"] == 4
-    with services.db.begin() as s:
-        record_login(s, Identity("cas", "too-late"), [])  # registered after the freeze: not on the roll
-    assert admin_election(api, e)["voter_count"] == 4
 
+    # A UFSC user may join once frozen, before it opens; another CAS service's users may not.
+    login_as(web, "ufsc", "maria")
+    me = web.get(f"/api/elections/{e['id']}/me").json()
+    assert me == {"eligible": True, "voter_id": None, "cast": []}
+    pub = web.get(f"/api/elections/{e['id']}").json()
+    assert pub["open_to"] == [{"provider": "ufsc", "label": "UFSC"}] and pub["voters"] == 1
+    joined = web.post(f"/api/elections/{e['id']}/join").json()
+    assert joined["voter_id"] and web.post(f"/api/elections/{e['id']}/join").json() == joined
+    assert web.get(f"/api/elections/{e['id']}").json()["voters"] == 2
+
+    login_as(web, "cas", "maria")
+    assert web.get(f"/api/elections/{e['id']}/me").json()["eligible"] is False
+    assert web.post(f"/api/elections/{e['id']}/join").status_code == 403
+
+    # Joining after it opens works too; casting needs joining first.
+    act(api, e, "open")
+    login_as(web, "ufsc", "joao")
+    r = web.post(f"/api/elections/{e['id']}/ballots", files={"q0": ("q0", b"x" * 100)})
+    assert r.status_code == 403 and "join" in r.json()["detail"]
+    web.post(f"/api/elections/{e['id']}/join")
+    assert booth(web, e, {0: (1,)}).status_code == 201
+    login_as(web, "ufsc", "maria")
+    assert booth(web, e, {0: (0,)}).status_code == 201
+
+    voters = api.get(f"/api/admin/elections/{e['id']}/voters").json()
+    assert sorted((v["provider"], v["external_id"], v["self_enrolled"]) for v in voters) == [
+        ("password", "voter0", False),
+        ("ufsc", "joao", True),
+        ("ufsc", "maria", True),
+    ]
+    clone = api.post(f"/api/admin/elections/{e['id']}/clone").json()
+    assert clone["open_to"] == ["ufsc"] and clone["voter_count"] == 1
+
+    act(api, e, "close")
+    login_as(web, "ufsc", "late")
+    assert web.post(f"/api/elections/{e['id']}/join").status_code == 409
+    act(api, e, "count")
+    queue.drain()
+    tally = admin_election(api, e)["questions"][0]["tally"]
+    assert tally["result"]["counts"][:2] == [1, 1]
+
+
+def test_an_election_open_to_a_login_method_may_start_with_an_empty_roll(api, queue):
+    e = new_election(api, voters=0, open_to=["password"])
+    act(api, e, "freeze")
+    queue.drain()
+    assert admin_election(api, e)["state"] == "frozen"
+
+
+PROVIDERS = ("password", "cas")
 
 # --- CSV ----------------------------------------------------------------------------------------
 
@@ -257,15 +291,15 @@ def test_voters_from_csv(api):
 )
 def test_bad_voter_csv(text, error):
     with pytest.raises(ops.Invalid, match=error):
-        rolls.parse_voters(text)
+        rolls.parse_voters(text, PROVIDERS)
 
 
 def test_csv_dialects_and_split_identity_columns():
-    assert rolls.parse_voters("provider;username;email\ncas;jdoe;j@x\n") == [
+    assert rolls.parse_voters("provider;username;email\ncas;jdoe;j@x\n", PROVIDERS) == [
         ops.VoterEntry("cas", "jdoe", "j@x")
     ]
-    assert rolls.parse_identities("cas:a\npassword:b\n") == [("cas", "a"), ("password", "b")]
-    assert rolls.parse_identities("name,identity\nAnn,cas:ann\n") == [("cas", "ann")]
+    assert rolls.parse_identities("cas:a\npassword:b\n", PROVIDERS) == [("cas", "a"), ("password", "b")]
+    assert rolls.parse_identities("name,identity\nAnn,cas:ann\n", PROVIDERS) == [("cas", "ann")]
 
 
 def test_csv_needs_a_draft(api, queue):

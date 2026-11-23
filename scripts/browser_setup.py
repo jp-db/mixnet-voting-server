@@ -1,5 +1,7 @@
 """Prepares scripts/browser_test.mjs: logins manager1 and voter0..2, and an election
-that the scheduler (celery beat) opens a few seconds after its keys are in.
+that the scheduler (celery beat) opens a few seconds after its keys are in. voter0
+and voter1 are on the roll; voter2 is not, and joins because the election is open
+to password logins.
 
 BALLOT_BOX_ADMIN_TOKEN=... uv run python scripts/browser_setup.py > election-id
 """
@@ -25,10 +27,11 @@ qs = [
 ]
 # Created without questions; they come later, as in the admin pages.
 e = m.post("/api/admin/elections", json={"title": "Browser election"}).json()
-assert m.patch(f"/api/admin/elections/{e['id']}", json={"questions": qs}).status_code == 200
-csv = "identity\n" + "".join(f"password:voter{i}\n" for i in range(3))
+r = m.patch(f"/api/admin/elections/{e['id']}", json={"questions": qs, "open_to": ["password"]})
+assert r.status_code == 200, r.text
+csv = "identity\n" + "".join(f"password:voter{i}\n" for i in range(2))
 r = m.post(f"/api/admin/elections/{e['id']}/voters/csv", content=csv, headers={"Content-Type": "text/csv"})
-assert r.json() == {"rows": 3, "added": 3}, r.text
+assert r.json() == {"rows": 2, "added": 2}, r.text
 opens = datetime.now(UTC) + timedelta(seconds=5)
 r = m.put(f"/api/admin/elections/{e['id']}/schedule", json={"opens_at": opens.isoformat(), "closes_at": None})
 assert r.status_code == 200, r.text

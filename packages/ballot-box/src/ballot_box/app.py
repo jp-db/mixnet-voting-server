@@ -36,8 +36,9 @@ def create_app(
     app = FastAPI(title="Mixnet voting — ballot box", version="0.1.0", lifespan=lifespan)
     app.state.settings = settings
     app.state.queue = queue or CeleryQueue()
-    if settings.cas_server_url:
-        app.state.cas = CASProvider(settings.cas_server_url, settings.public_url)
+    app.state.cas = {
+        name: CASProvider(name, c.url, settings.public_url) for name, c in settings.cas_services.items()
+    }
 
     @app.get("/health", tags=["ops"])
     def health() -> dict[str, object]:

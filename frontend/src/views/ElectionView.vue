@@ -45,7 +45,9 @@ async function checkTracker() {
     <div class="row"><h1>{{ election.title }}</h1><StateBadge :state="election.state" /></div>
     <p v-if="election.description">{{ election.description }}</p>
     <p class="muted">
-      {{ election.voters }} voters on the roll.
+      {{ election.voters }} voters on the roll<template v-if="election.open_to.length"
+        >; everyone who logs in with {{ election.open_to.map((o) => o.label).join(' or ') }} may also vote</template
+      >.
       <template v-if="election.opened_at">Opened {{ when(election.opened_at) }}.</template>
       <template v-else-if="election.opens_at">Voting opens {{ when(election.opens_at) }}.</template>
       <template v-if="election.closed_at"> Closed {{ when(election.closed_at) }}.</template>

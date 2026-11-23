@@ -20,7 +20,7 @@ const next = computed(() => {
   return n.startsWith('/') && !n.startsWith('//') && !n.includes('\\') ? n : '/';
 });
 const hasPassword = computed(() => providers.value.some((p) => p.name === 'password'));
-const hasCas = computed(() => providers.value.some((p) => p.name === 'cas'));
+const casServices = computed(() => providers.value.filter((p) => p.kind === 'cas'));
 
 onMounted(async () => {
   try {
@@ -48,8 +48,8 @@ async function submit() {
 <template>
   <h1>Log in</h1>
   <p v-if="error" class="error">{{ error }}</p>
-  <div v-if="hasCas" class="card">
-    <a class="button primary" :href="api.casLoginUrl(next)">Log in with single sign-on (CAS)</a>
+  <div v-if="casServices.length" class="card row">
+    <a v-for="p in casServices" :key="p.name" class="button primary" :href="api.loginUrl(p, next)">Log in with {{ p.label }}</a>
   </div>
   <form v-if="hasPassword" class="card stack" @submit.prevent="submit">
     <label><span>Username</span><input v-model="username" autocomplete="username" required /></label>

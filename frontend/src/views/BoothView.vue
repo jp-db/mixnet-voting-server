@@ -129,11 +129,17 @@ const canReview = computed(
 );
 
 async function castAll() {
-  if (!election.value || !voterId.value) return;
+  if (!election.value) return;
   if (props.simulate) return rehearse();
   step.value = 'casting';
   error.value = '';
   try {
+    if (!voterId.value) {
+      // The election is open to the voter's login method: join its roll, which gives the voter id.
+      progress.value = 'Joining the voter roll…';
+      voterId.value = (await api.join(props.id)).voter_id;
+      if (!voterId.value) throw new Error('the ballot box gave no voter id');
+    }
     const ballots = new Map<number, Uint8Array<ArrayBuffer>>();
     const trackers = new Map<number, string>();
     for (const [n, q] of answered.value.entries()) {

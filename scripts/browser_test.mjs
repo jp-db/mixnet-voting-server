@@ -177,7 +177,7 @@ for (const plan of process.argv[4] === 'after-vote' ? [] : plans) {
   await page.waitText('Your ballot was cast', 60000);
   trackers[plan.user] = await page.evaluate(`[...document.querySelectorAll('td.mono')].map((td) => td.textContent.trim())`);
   if (plan.user === 'voter0') await page.shot('2-cast');
-  step(`${plan.user} voted in the browser: trackers ${trackers[plan.user].map((t) => t.slice(0, 12)).join(', ')}`);
+  step(`${plan.user} voted in the browser${plan.user === 'voter2' ? ' (joined the roll: open to password logins)' : ''}: trackers ${trackers[plan.user].map((t) => t.slice(0, 12)).join(', ')}`);
 }
 
 // The voter's election page lists the same trackers; the tracker check finds them

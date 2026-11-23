@@ -7,6 +7,7 @@ import {
   type AdminElection,
   type LifecycleAction,
   type MixnetNode,
+  type Provider,
   type QuestionInput,
   type Voter,
 } from '../../api.ts';
@@ -31,7 +32,8 @@ const title = ref('');
 const description = ref('');
 const questions = ref<QuestionInput[]>([]);
 const chain = ref<string[]>([]);
-const openToAll = ref(false);
+const openTo = ref<string[]>([]);
+const providers = ref<Provider[]>([]);
 const roll = ref('');
 const managersText = ref('');
 const opensAt = ref('');
@@ -48,7 +50,7 @@ function adopt(e: AdminElection) {
   description.value = e.description;
   questions.value = e.questions.map((q) => ({ ...q.spec, answers: [...q.spec.answers] }));
   chain.value = e.mix_servers.map((m) => m.node);
-  openToAll.value = e.open_to_all;
+  openTo.value = [...e.open_to];
   opensAt.value = toLocalInput(e.opens_at);
   closesAt.value = toLocalInput(e.closes_at);
   // Key generation and counting run in the background: poll while they do.
@@ -66,12 +68,14 @@ async function reload() {
 
 onMounted(async () => {
   try {
-    const [e, n, v, m] = await Promise.all([
+    const [e, n, v, m, p] = await Promise.all([
       api.admin.election(props.id),
       api.admin.nodes(),
       api.admin.voters(props.id),
       api.admin.managers(props.id),
+      api.providers(),
     ]);
+    providers.value = p;
     adopt(e);
     nodes.value = n;
     voters.value = v;
@@ -102,10 +106,14 @@ const save = () =>
         description: description.value,
         questions: questions.value,
         mix_servers: chain.value,
-        open_to_all: openToAll.value,
+        open_to: openTo.value,
       }),
     ),
   );
+
+function label(name: string): string {
+  return providers.value.find((p) => p.name === name)?.label ?? name;
+}
 
 const saveSchedule = () =>
   run('Voting period saved.', async () =>
@@ -260,10 +268,14 @@ function act(a: (typeof ACTIONS)[number]) {
       <h2>Election</h2>
       <label><span>Title</span><input v-model="title" :disabled="!draft" required /></label>
       <label><span>Description</span><textarea v-model="description" :disabled="!draft" rows="2" /></label>
-      <label class="choice">
-        <input v-model="openToAll" type="checkbox" :disabled="!draft" />
-        Open to everyone registered: every account and password login joins the voter roll when the election is frozen
-      </label>
+      <fieldset class="plain">
+        <legend class="muted">Besides the voter roll, everyone who logs in with:</legend>
+        <label v-for="p in providers" :key="p.name" class="choice">
+          <input v-model="openTo" type="checkbox" :value="p.name" :disabled="!draft" />
+          {{ p.label }}
+        </label>
+        <p class="muted">may vote. They join the roll themselves when they first vote, also after the election is frozen.</p>
+      </fieldset>
       <h3>Questions</h3>
       <QuestionsEditor v-model="questions" :disabled="!draft" />
       <h3>Mix servers</h3>
@@ -308,19 +320,18 @@ function act(a: (typeof ACTIONS)[number]) {
       <h2>Voter roll ({{ election.voter_count }})</h2>
       <div class="table-wrap" v-if="voters.length">
         <table>
-          <tr><th>Login</th><th>Name</th><th>Email</th><th>Voter id</th></tr>
+          <tr><th>Login</th><th>Name</th><th>Email</th><th>Voter id</th><th>Added by</th></tr>
           <tr v-for="v in voters" :key="v.id">
             <td>{{ v.provider }}:{{ v.external_id }}</td>
             <td>{{ v.display_name }}</td>
             <td>{{ v.email }}</td>
             <td class="mono">{{ v.voter_id }}</td>
+            <td>{{ v.self_enrolled ? 'joining' : 'a manager' }}</td>
           </tr>
         </table>
       </div>
-      <p v-if="election.open_to_all" class="muted">
-        Open to everyone registered:
-        <template v-if="draft">the registered accounts join this roll when the election is frozen.</template>
-        <template v-else>the accounts registered at freezing time were added.</template>
+      <p v-if="election.open_to.length" class="muted">
+        Also open to everyone who logs in with {{ election.open_to.map(label).join(' or ') }}: they join this roll when they first vote.
       </p>
       <form v-if="draft" class="stack" @submit.prevent="addVoters">
         <label>

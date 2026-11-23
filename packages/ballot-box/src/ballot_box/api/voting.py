@@ -17,7 +17,8 @@ Public once the results are published:
 
 For the logged-in voter:
 
-    ``GET  /{id}/me``        whether they are on the roll, their voter id, what they cast
+    ``GET  /{id}/me``        whether they may vote, their voter id, what they cast
+    ``POST /{id}/join``      join the roll of an election open to their login method
     ``POST /{id}/ballots``   cast: multipart, one part ``q<i>`` per question answered
 
 Voter ids travel as decimal strings, as evmlr's 64-bit ids would need in
@@ -111,6 +112,11 @@ class PublicMixServer(BaseModel):
     node: str
 
 
+class OpenTo(BaseModel):
+    provider: str
+    label: str
+
+
 class PublicElection(BaseModel):
     id: uuid.UUID
     title: str
@@ -126,6 +132,9 @@ class PublicElection(BaseModel):
     mix_servers: list[PublicMixServer]
     questions: list[PublicQuestion]
     voters: int
+    """On the roll now; it grows while voters join an election open to their login method."""
+    open_to: list[OpenTo]
+    """Login methods whose every user may vote, besides the roll."""
 
 
 class BoardEntry(BaseModel):
@@ -159,7 +168,9 @@ class CastOut(BaseModel):
 
 class MeOut(BaseModel):
     eligible: bool
+    """On the roll, or may join it (see ``voter_id``)."""
     voter_id: str | None
+    """None while an eligible voter has not joined the roll yet (``POST /join``)."""
     cast: list[CastOut]
     """The voter's latest ballot of each question."""
 
@@ -211,7 +222,7 @@ def list_elections(db: Db) -> list[ElectionListItem]:
 
 
 @router.get("/{election_id}", response_model=PublicElection)
-def get_election(election_id: ElectionId, db: Db) -> PublicElection:
+def get_election(election_id: ElectionId, db: Db, request: Request) -> PublicElection:
     election = _election(db, election_id)
     counts = dict(
         db.execute(
@@ -244,6 +255,9 @@ def get_election(election_id: ElectionId, db: Db) -> PublicElection:
             for q in election.questions
         ],
         voters=voters or 0,
+        open_to=[
+            OpenTo(provider=p, label=request.app.state.settings.provider_label(p)) for p in election.open_to
+        ],
     )
 
 
@@ -390,8 +404,29 @@ def me(election_id: ElectionId, identity: RequiredIdentity, db: Db) -> MeOut:
     election = _election(db, election_id)
     voter = _voter(db, election, identity)
     if voter is None:
-        return MeOut(eligible=False, voter_id=None, cast=[])
+        return MeOut(eligible=ops.open_to(election, identity), voter_id=None, cast=[])
     return MeOut(eligible=True, voter_id=str(voter.voter_id), cast=_latest_casts(db, election, voter))
+
+
+@router.post("/{election_id}/join", response_model=MeOut, dependencies=[Depends(same_origin)])
+def join(election_id: ElectionId, identity: RequiredIdentity, request: Request) -> MeOut:
+    """Puts the logged-in voter on the roll of an election open to their login method
+    (from the freeze until voting closes), with a random voter id. Idempotent."""
+    svc: Services = request.app.state.services
+    with svc.db() as db:
+
+        def run() -> Voter:
+            election = ops.get_election(db, election_id, shared=True)
+            if election.state not in _PUBLIC:
+                raise ops.NotFound("no such election")
+            voter = _voter(db, election, identity)
+            if voter is None and not ops.open_to(election, identity):
+                raise HTTPException(status.HTTP_403_FORBIDDEN, "you are not on this election's voter roll")
+            return voter or ops.enroll(db, election, identity)
+
+        voter = errors(run)
+        db.commit()
+        return MeOut(eligible=True, voter_id=str(voter.voter_id), cast=[])
 
 
 async def read_ballots(request: Request, limit: int) -> dict[int, bytes]:
@@ -449,7 +484,12 @@ def _cast(
                 raise ops.NotFound("no such election")
             voter = _voter(db, election, identity)
             if voter is None:
-                raise HTTPException(status.HTTP_403_FORBIDDEN, "you are not on this election's voter roll")
+                detail = (
+                    "join the roll first (POST /join)"
+                    if ops.open_to(election, identity)
+                    else "you are not on this election's voter roll"
+                )
+                raise HTTPException(status.HTTP_403_FORBIDDEN, detail)
             return ops.cast_ballots(db, svc.blobs, election, voter, ballots)
 
         rows = errors(run)

@@ -17,11 +17,9 @@ from __future__ import annotations
 
 import csv
 import io
+from collections.abc import Collection
 
 from .service import Invalid, VoterEntry
-
-PROVIDERS = frozenset({"password", "cas"})
-"""The login methods an identity can belong to."""
 
 MAX_ROWS = 100_000
 
@@ -39,14 +37,14 @@ _ALIASES = {
 }
 
 
-def parse_identity(text: str, where: str = "") -> tuple[str, str]:
-    """``provider:external_id`` -> its two parts."""
+def parse_identity(text: str, providers: Collection[str], where: str = "") -> tuple[str, str]:
+    """``provider:external_id`` -> its two parts. ``providers``: the login methods there are."""
     provider, sep, external_id = text.strip().partition(":")
     prefix = f"{where}: " if where else ""
     if not sep or not provider or not external_id.strip():
         raise Invalid(f"{prefix}“{text}” is not an identity: write provider:username, e.g. cas:jdoe")
-    if provider not in PROVIDERS:
-        raise Invalid(f"{prefix}unknown login method “{provider}” (known: {', '.join(sorted(PROVIDERS))})")
+    if provider not in providers:
+        raise Invalid(f"{prefix}unknown login method “{provider}” (known: {', '.join(sorted(providers))})")
     if len(external_id) > 255:
         raise Invalid(f"{prefix}the username is too long")
     return provider, external_id.strip()
@@ -82,7 +80,7 @@ def _cell(cells: list[str], i: int | None) -> str:
     return cells[i] if i is not None and i < len(cells) else ""
 
 
-def parse_voters(text: str) -> list[VoterEntry]:
+def parse_voters(text: str, providers: Collection[str]) -> list[VoterEntry]:
     rows = _rows(text)
     header = _header(rows[0][1]) if rows else None
     if header is not None:
@@ -94,10 +92,12 @@ def parse_voters(text: str) -> list[VoterEntry]:
         if header is None and len(cells) > 3:
             raise Invalid(f"{where}: too many columns (put a name that has a comma in quotes)")
         if "identity" in columns:
-            provider, external_id = parse_identity(_cell(cells, columns["identity"]), where)
+            provider, external_id = parse_identity(_cell(cells, columns["identity"]), providers, where)
         else:
             provider, external_id = parse_identity(
-                f"{_cell(cells, columns['provider'])}:{_cell(cells, columns['external_id'])}", where
+                f"{_cell(cells, columns['provider'])}:{_cell(cells, columns['external_id'])}",
+                providers,
+                where,
             )
         email = _cell(cells, columns.get("email")) or None
         name = _cell(cells, columns.get("display_name")) or None
@@ -111,7 +111,7 @@ def parse_voters(text: str) -> list[VoterEntry]:
     return out
 
 
-def parse_identities(text: str) -> list[tuple[str, str]]:
+def parse_identities(text: str, providers: Collection[str]) -> list[tuple[str, str]]:
     rows = _rows(text)
     column = 0
     if rows:
@@ -120,9 +120,11 @@ def parse_identities(text: str) -> list[tuple[str, str]]:
             rows = rows[1:]
             if "identity" not in columns:
                 p, x = columns["provider"], columns["external_id"]
-                return [parse_identity(f"{_cell(c, p)}:{_cell(c, x)}", f"line {n}") for n, c in rows]
+                return [
+                    parse_identity(f"{_cell(c, p)}:{_cell(c, x)}", providers, f"line {n}") for n, c in rows
+                ]
             column = columns["identity"]
-    out = [parse_identity(_cell(cells, column), f"line {n}") for n, cells in rows]
+    out = [parse_identity(_cell(cells, column), providers, f"line {n}") for n, cells in rows]
     if not out:
         raise Invalid("no identities in the file")
     return out

@@ -70,10 +70,20 @@ run them there (it is wiped after each test).
 
 ## Logins and roles
 
-People log in with a username and password (`password`) or through a CAS
-server (`cas`), as enabled in `BALLOT_BOX_AUTH_PROVIDERS` (with
-`BALLOT_BOX_CAS_SERVER_URL` for CAS). There is no self sign-up: an
-administrator creates password logins. Voting needs no role: the voter roll
+People log in with a username and password (`password`) or through one of
+the CAS services, as enabled in `BALLOT_BOX_AUTH_PROVIDERS` (in display
+order). Each CAS service has a name, which is the provider of its users'
+identities (`ufsc:jdoe`):
+
+```sh
+BALLOT_BOX_AUTH_PROVIDERS='["ufsc", "password"]'
+BALLOT_BOX_CAS_SERVERS='[{"name": "ufsc", "label": "UFSC (idUFSC)", "url": "https://sso.example.br/cas/"}]'
+```
+
+(`BALLOT_BOX_CAS_SERVER_URL` alone is a shorthand for one service named
+`cas`.) Register `<public_url>/auth/cas/<name>/callback` as the service URL
+at each CAS server. There is no self sign-up: an administrator creates
+password logins. Voting needs no role: the voter roll
 of each election lists who may vote, by provider and username.
 
 Administrators may do everything; managers may create elections and manage
@@ -108,8 +118,10 @@ A new election is a draft with only a title: questions (each answer entered
 separately), mix servers, the voter roll and the voting period are set on its
 page, and it cannot be frozen without questions and voters. Voters can be
 pasted or uploaded as CSV (`identity,email,display_name`, header optional),
-or the election can be open to everyone registered: every account and
-password login joins the roll when it freezes. Elections can be cloned
+and the election can also be open to whole login methods (password logins,
+or a given CAS service): anyone who logs in with one may vote, joining the
+roll themselves when they first vote, also after the freeze (the public
+parameters do not depend on the roll). Elections can be cloned
 (questions, mix chain, roll and managers; not the schedule or anything
 cast). "Try the booth" rehearses voting: before freezing it checks and
 shows the encoding; afterwards it also encrypts with evmlr in the browser,

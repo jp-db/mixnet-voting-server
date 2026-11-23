@@ -132,8 +132,9 @@ class Election(Base):
     """When the scheduler opens the election (once frozen). None: the manager opens it."""
     closes_at: Mapped[datetime | None]
     """When the scheduler closes it; casting stops then even if the scheduler is late."""
-    open_to_all: Mapped[bool] = mapped_column(default=False)
-    """Every registered account and password login may vote: they join the roll at freeze."""
+    open_to: Mapped[list[Any]] = mapped_column(default=list)
+    """Login methods (``password``, a CAS service name) whose every user may vote,
+    besides the roll: they join it themselves, even after the freeze."""
 
     questions: Mapped[list[Question]] = relationship(
         back_populates="election", order_by="Question.index", cascade="all, delete-orphan"
@@ -215,9 +216,9 @@ class Voter(Base):
     """Matched against the :class:`ballot_box.auth.Identity` of whoever logs in."""
     email: Mapped[str | None] = mapped_column(String(320))
     display_name: Mapped[str | None] = mapped_column(String(200))
-    from_registry: Mapped[bool] = mapped_column(default=False)
-    """Added at freeze because the election is open to all registered accounts;
-    removed again if it goes back to draft."""
+    self_enrolled: Mapped[bool] = mapped_column(default=False)
+    """Joined by logging in, because the election is open to their login method
+    (not put on the roll by a manager)."""
 
     election: Mapped[Election] = relationship(back_populates="voters")
 

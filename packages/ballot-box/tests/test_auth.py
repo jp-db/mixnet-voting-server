@@ -56,7 +56,7 @@ def auth_app(settings, services, queue):
     )
     app = create_app(settings, services=services, queue=queue)
     with TestClient(app, base_url=PUBLIC):  # runs the lifespan once
-        app.state.cas.http_session = FakeCasHttp()
+        app.state.cas["cas"].http_session = FakeCasHttp()
         yield app
 
 
@@ -79,9 +79,9 @@ def password_login(client: TestClient, username: str, password: str = PASSWORD):
 
 
 def cas_login(app, client: TestClient, user: str, next_path: str = "/"):
-    r = client.get("/auth/cas/login", params={"next": next_path})
+    r = client.get("/auth/cas/cas/login", params={"next": next_path})
     service = parse_qs(urlsplit(r.headers["location"]).query)["service"][0]
-    app.state.cas.http_session.tickets[f"ST-{user}"] = user
+    app.state.cas["cas"].http_session.tickets[f"ST-{user}"] = user
     callback = urlsplit(service)
     return client.get(f"{callback.path}?{callback.query}&ticket=ST-{user}")
 
@@ -126,9 +126,12 @@ def test_a_tampered_cookie_is_ignored(auth_app, admin):
 def test_providers_and_disabled_logins(auth_app, settings, services, queue):
     web = browser(auth_app)
     assert [p["name"] for p in web.get("/auth/providers").json()] == ["password", "cas"]
-    only_password = create_app(settings, services=services, queue=queue)
+    only_password = create_app(
+        settings.model_copy(update={"auth_providers": ["password"]}), services=services, queue=queue
+    )
     with TestClient(only_password, base_url=PUBLIC) as client:
-        assert client.get("/auth/cas/login").status_code == 404
+        assert client.get("/auth/cas/cas/login").status_code == 404  # configured, not enabled
+        assert client.get("/auth/cas/nope/login").status_code == 404
 
 
 def test_cross_site_login_post_is_refused(auth_app, admin):
@@ -146,24 +149,53 @@ def test_cross_site_login_post_is_refused(auth_app, admin):
 
 def test_cas_login(auth_app):
     web = browser(auth_app)
-    r = web.get("/auth/cas/login", params={"next": "/elections/1"})
+    r = web.get("/auth/cas/cas/login", params={"next": "/elections/1"})
     assert r.status_code == 303
     location = urlsplit(r.headers["location"])
     assert f"{location.scheme}://{location.netloc}{location.path}" == CAS_SERVER + "login"
     service = parse_qs(location.query)["service"][0]
-    assert service == f"{PUBLIC}/auth/cas/callback?next=%2Felections%2F1"
+    assert service == f"{PUBLIC}/auth/cas/cas/callback?next=%2Felections%2F1"
 
     r = cas_login(auth_app, web, "jdoe", "/elections/1")
     assert r.status_code == 303 and r.headers["location"] == "/elections/1"
     me = web.get("/auth/me").json()
     assert (me["provider"], me["external_id"], me["email"]) == ("cas", "jdoe", "jdoe@example.edu")
-    url, params = auth_app.state.cas.http_session.calls[-1]
+    url, params = auth_app.state.cas["cas"].http_session.calls[-1]
     assert url == CAS_SERVER + "p3/serviceValidate" and params["service"] == service
+
+
+def test_several_cas_services(settings, services, queue):
+    settings = settings.model_copy(update={"auth_providers": ["ufsc", "password", "cas"]})
+    app = create_app(settings, services=services, queue=queue)
+    with TestClient(app, base_url=PUBLIC):
+        fake = app.state.cas["ufsc"].http_session = FakeCasHttp()
+        web = browser(app)
+        providers = web.get("/auth/providers").json()
+        assert [(p["name"], p["kind"], p["label"]) for p in providers] == [
+            ("ufsc", "cas", "UFSC"),
+            ("password", "password", "Username and password"),
+            ("cas", "cas", "Example CAS"),
+        ]
+        r = web.get(providers[0]["login_url"], params={"next": "/x"})
+        assert r.headers["location"].startswith("https://sso.example.br/cas/login?")
+        fake.tickets["ST-1"] = "maria"
+        r = web.get("/auth/cas/ufsc/callback", params={"ticket": "ST-1", "next": "/x"})
+        assert r.status_code == 303
+        assert web.get("/auth/me").json()["provider"] == "ufsc"  # an identity of its own: ufsc:maria
+        assert fake.calls[-1][0] == "https://sso.example.br/cas/p3/serviceValidate"
+
+
+def test_cas_service_names_are_checked(settings):
+    with pytest.raises(ValueError, match="unknown auth providers: ldap"):
+        settings.model_validate({**settings.model_dump(), "auth_providers": ["ldap"]})
+    bad = [{"name": "password", "label": "x", "url": "https://x"}]
+    with pytest.raises(ValueError, match="distinct"):
+        settings.model_validate({**settings.model_dump(), "cas_servers": bad})
 
 
 def test_cas_rejects_unknown_tickets(auth_app):
     web = browser(auth_app)
-    assert web.get("/auth/cas/callback", params={"ticket": "ST-forged", "next": "/"}).status_code == 401
+    assert web.get("/auth/cas/cas/callback", params={"ticket": "ST-forged", "next": "/"}).status_code == 401
     assert web.get("/auth/me").status_code == 401
 
 

@@ -1,4 +1,7 @@
-"""The ``cas`` provider: log in at a CAS server (protocol 3.0), validate the ticket on return.
+"""CAS providers: log in at a CAS server (protocol 3.0), validate the ticket on return.
+
+There may be several CAS services, each a provider of its own: its name is
+the identities' provider (``Settings.cas_servers``).
 
 The service URL sent to CAS is this server's callback with the page to
 return to; CAS requires the same service URL when the ticket is validated,
@@ -14,18 +17,17 @@ import cas
 
 from .base import Identity
 
-NAME = "cas"
-
 
 class CASProvider:
-    def __init__(self, server_url: str, public_url: str, http_session: Any = None) -> None:
+    def __init__(self, name: str, server_url: str, public_url: str, http_session: Any = None) -> None:
         """``http_session`` is a ``requests.Session`` (tests pass a stand-in)."""
+        self.name = name
         self.server_url = server_url.rstrip("/") + "/"
         self.public_url = public_url.rstrip("/")
         self.http_session = http_session
 
     def _client(self, next_path: str) -> cas.CASClientV3:
-        service = f"{self.public_url}/auth/cas/callback?{urlencode({'next': next_path})}"
+        service = f"{self.public_url}/auth/cas/{self.name}/callback?{urlencode({'next': next_path})}"
         return cas.CASClient(
             version=3, service_url=service, server_url=self.server_url, session=self.http_session
         )
@@ -42,7 +44,7 @@ class CASProvider:
         email = attributes.get("mail") or attributes.get("email")
         name = attributes.get("displayName") or attributes.get("cn")
         return Identity(
-            provider=NAME,
+            provider=self.name,
             external_id=user,
             email=email if isinstance(email, str) else None,
             display_name=name if isinstance(name, str) else None,

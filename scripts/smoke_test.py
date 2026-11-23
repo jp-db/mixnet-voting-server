@@ -52,8 +52,10 @@ def wait(eid, state, timeout=120):
 
 for u in ["manager1"] + [f"voter{i}" for i in range(4)]:
     ok(admin.put("/api/admin/password-logins", json={"username": u, "password": PW}), 204)
+fresh = all(a["identity"] != "password:manager1" for a in ok(admin.get("/api/admin/accounts")))
 manager = browser("manager1")
-assert manager.get("/api/admin/elections").status_code == 403
+if fresh:  # on a reused database manager1 may already manage elections
+    assert manager.get("/api/admin/elections").status_code == 403
 acct = next(a for a in ok(admin.get("/api/admin/accounts")) if a["identity"] == "password:manager1")
 ok(admin.patch(f"/api/admin/accounts/{acct['id']}", json={"can_manage": True}))
 

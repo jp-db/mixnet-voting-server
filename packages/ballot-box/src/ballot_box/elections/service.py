@@ -14,20 +14,20 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 import evmlr
 from voting_common.blobstore import BlobStore
 
+from ..auth.base import Identity
 from ..mixnet.nodes import default_nodes
 from ..models import (
-    Account,
     Ballot,
     Election,
     ElectionManager,
     ElectionMixServer,
     MixnetNode,
-    PasswordCredential,
     Question,
     Tally,
     TallyState,
@@ -146,17 +146,16 @@ def create_election(
 def clone_election(session: Session, source: Election, title: str | None = None) -> Election:
     """A new draft with ``source``'s configuration, in any state of ``source``.
 
-    It copies the description, questions, mix chain, managers, the open-to-all
-    setting and the roll as entered (voters added at freeze for an election
-    open to all are not copied: the clone adds the accounts registered at its
-    own freeze). Voters get new random ids. The schedule, keys, ballots and
-    results are not copied.
+    It copies the description, questions, mix chain, managers, the login
+    methods it is open to and the roll the managers made (not the voters who
+    joined by logging in). Voters get new random ids. The schedule, keys,
+    ballots and results are not copied.
     """
     clone = Election(
         title=title or f"Copy of {source.title}"[:200],
         description=source.description,
         state=ElectionState.DRAFT,
-        open_to_all=source.open_to_all,
+        open_to=list(source.open_to),
     )
     session.add(clone)
     clone.questions.extend(Question(index=q.index, spec=dict(q.spec)) for q in source.questions)
@@ -171,7 +170,7 @@ def clone_election(session: Session, source: Election, title: str | None = None)
         [
             VoterEntry(v.provider, v.external_id, v.email, v.display_name)
             for v in source.voters
-            if not v.from_registry
+            if not v.self_enrolled
         ],
     )
     return clone
@@ -186,11 +185,11 @@ def update_election(
     questions: Sequence[QuestionSpec] | None = None,
     mix_servers: Sequence[str] | None = None,
     default_mix_servers: bool = False,
-    open_to_all: bool | None = None,
+    open_to: Sequence[str] | None = None,
 ) -> None:
     _require(election, ElectionState.DRAFT)
-    if open_to_all is not None:
-        election.open_to_all = open_to_all
+    if open_to is not None:
+        election.open_to = list(dict.fromkeys(open_to))
     if title is not None:
         election.title = title
     if description is not None:
@@ -301,9 +300,7 @@ def _new_voter_id(taken: set[int]) -> int:
             return vid
 
 
-def add_voters(
-    session: Session, election: Election, entries: Sequence[VoterEntry], *, from_registry: bool = False
-) -> list[Voter]:
+def add_voters(session: Session, election: Election, entries: Sequence[VoterEntry]) -> list[Voter]:
     """Adds voters to the roll; an entry already on it is returned unchanged.
 
     Each new voter gets a random evmlr voter id: ids carry no information
@@ -323,7 +320,6 @@ def add_voters(
                 external_id=entry.external_id,
                 email=entry.email,
                 display_name=entry.display_name,
-                from_registry=from_registry,
             )
             election.voters.append(voter)
             existing[key] = voter
@@ -332,27 +328,57 @@ def add_voters(
     return out
 
 
-def registered_identities(session: Session) -> list[VoterEntry]:
-    """Everyone registered: every account (whoever has logged in, or was named a
-    manager) and every password login, even one not used yet."""
-    entries = {
-        (a.provider, a.external_id): VoterEntry(a.provider, a.external_id, a.email, a.display_name)
-        for a in session.scalars(select(Account))
-    }
-    for c in session.scalars(select(PasswordCredential)):
-        entries.setdefault(
-            ("password", c.username), VoterEntry("password", c.username, c.email, c.display_name)
+def open_to(election: Election, identity: Identity) -> bool:
+    """The identity may join the roll by itself: the election is open to its login method."""
+    return identity.provider in election.open_to
+
+
+def enroll(session: Session, election: Election, identity: Identity) -> Voter:
+    """Puts the identity on the roll of an election open to its login method,
+    with a random voter id; returns its entry if it is there already.
+
+    Allowed from the freeze until voting closes: the public parameters do not
+    depend on the roll, so voters can join after them. The caller holds at
+    least a shared lock on the election row.
+    """
+    _require(election, ElectionState.FROZEN, ElectionState.OPEN)
+    if voting_closed(election):
+        raise WrongState("voting has closed")
+    for _ in range(10):
+        voter = session.scalar(
+            select(Voter).where(
+                Voter.election_id == election.id,
+                Voter.provider == identity.provider,
+                Voter.external_id == identity.external_id,
+            )
         )
-    return [entries[k] for k in sorted(entries)]
+        if voter is not None:
+            return voter
+        if not open_to(election, identity):
+            raise Invalid("you are not on this election's voter roll")
+        voter = Voter(
+            election_id=election.id,
+            voter_id=secrets.randbelow(MAX_VOTER_ID) + 1,
+            provider=identity.provider,
+            external_id=identity.external_id,
+            email=identity.email,
+            display_name=identity.display_name,
+            self_enrolled=True,
+        )
+        try:
+            with session.begin_nested():  # another request may join at once, or draw the same id
+                session.add(voter)
+        except IntegrityError:
+            continue
+        return voter
+    raise RuntimeError("could not add the voter")
 
 
 # --- lifecycle ------------------------------------------------------------------------------
 
 
-def freeze(session: Session, election: Election, now: datetime | None = None) -> None:
-    """DRAFT -> KEYGEN: fixes each question's evmlr election id and, for an
-    election open to all, adds every registered identity to the roll. Then
-    enqueue key generation.
+def freeze(election: Election, now: datetime | None = None) -> None:
+    """DRAFT -> KEYGEN: fixes each question's evmlr election id. Then enqueue key generation.
 
     Also accepted in KEYGEN, to retry a key generation that failed.
     """
@@ -366,10 +392,8 @@ def freeze(session: Session, election: Election, now: datetime | None = None) ->
         raise Invalid("an election needs at least one mix server")
     if voting_closed(election, now):
         raise Invalid("the closing time has passed: reschedule it first")
-    if election.open_to_all:
-        add_voters(session, election, registered_identities(session), from_registry=True)
-    if not election.voters:
-        raise Invalid("the voter roll is empty")
+    if not election.voters and not election.open_to:
+        raise Invalid("nobody can vote: add voters, or open the election to a login method")
     for q in election.questions:
         q.crypto_id = crypto_id(election.id, q.index, QuestionSpec.model_validate(q.spec))
         q.params_key = None
@@ -388,7 +412,6 @@ def unfreeze(election: Election) -> None:
         q.crypto_id = None
         q.params_key = None
         q.keys.clear()
-    election.voters[:] = [v for v in election.voters if not v.from_registry]
 
 
 def open_election(election: Election) -> None:

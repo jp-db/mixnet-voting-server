@@ -70,7 +70,9 @@ export interface Me {
 }
 
 export interface Provider {
-  name: 'password' | 'cas';
+  /** ``password``, or the name of a CAS service: the provider part of identities. */
+  name: string;
+  kind: 'password' | 'cas';
   label: string;
   login_url: string;
 }
@@ -108,7 +110,9 @@ export interface PublicElection {
   published_at: string | null;
   mix_servers: { position: number; node: string }[];
   questions: PublicQuestion[];
+  /** On the roll now: grows as voters join an election open to their login method. */
   voters: number;
+  open_to: { provider: string; label: string }[];
 }
 
 export interface Cast {
@@ -120,7 +124,7 @@ export interface Cast {
 
 export interface VoterStatus {
   eligible: boolean;
-  /** Decimal string (the API's convention for voter ids). */
+  /** Decimal string (the API's convention for voter ids); null until an eligible voter joins the roll. */
   voter_id: string | null;
   cast: Cast[];
 }
@@ -198,14 +202,16 @@ export interface AdminElection {
   published_at: string | null;
   opens_at: string | null;
   closes_at: string | null;
-  /** Every registered account joins the roll when the election freezes. */
-  open_to_all: boolean;
+  /** Login methods whose every user may vote, joining the roll themselves (also after freezing). */
+  open_to: string[];
   mix_servers: { position: number; node_id: string; node: string }[];
   questions: AdminQuestion[];
   voter_count: number;
 }
 
 export interface Voter {
+  /** Joined by logging in, the election being open to their login method. */
+  self_enrolled: boolean;
   id: string;
   voter_id: string;
   provider: string;
@@ -249,7 +255,8 @@ export const api = {
   passwordLogin: (username: string, password: string) =>
     json<void>('POST', '/auth/password/login', { username, password }),
   logout: () => json<void>('POST', '/auth/logout'),
-  casLoginUrl: (next: string) => `/auth/cas/login?next=${encodeURIComponent(next)}`,
+  /** Where a provider's login starts (CAS: a redirect), coming back to ``next``. */
+  loginUrl: (p: Provider, next: string) => `${p.login_url}?next=${encodeURIComponent(next)}`,
 
   // public
   elections: () => json<ElectionListItem[]>('GET', '/api/elections'),
@@ -267,6 +274,8 @@ export const api = {
 
   // voter
   voterStatus: (id: string) => json<VoterStatus>('GET', `${e(id)}/me`),
+  /** Joins the roll of an election open to the voter's login method; returns the voter id. */
+  join: (id: string) => json<VoterStatus>('POST', `${e(id)}/join`),
   cast: (id: string, ballots: Map<number, Uint8Array<ArrayBuffer>>) => {
     const form = new FormData();
     for (const [index, ballot] of ballots) form.append(`q${index}`, new Blob([ballot]), `q${index}`);
@@ -280,7 +289,7 @@ export const api = {
       json<MixnetNode>('POST', a('/mixnet-nodes'), { name, url, token }),
     elections: () => json<{ id: string; title: string; state: ElectionState; created_at: string }[]>('GET', a('/elections')),
     election: (id: string) => json<AdminElection>('GET', a(`/elections/${id}`)),
-    create: (body: { title: string; description: string; questions?: QuestionInput[]; mix_servers?: string[] | null; open_to_all?: boolean }) =>
+    create: (body: { title: string; description: string; questions?: QuestionInput[]; mix_servers?: string[] | null; open_to?: string[] }) =>
       json<AdminElection>('POST', a('/elections'), body),
     update: (
       id: string,
@@ -290,7 +299,7 @@ export const api = {
         questions: QuestionInput[];
         mix_servers: string[];
         use_default_mix_servers: boolean;
-        open_to_all: boolean;
+        open_to: string[];
       }>,
     ) => json<AdminElection>('PATCH', a(`/elections/${id}`), body),
     /** ISO times, or null for by hand. */

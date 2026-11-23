@@ -136,7 +136,8 @@ class ElectionIn(BaseModel):
     """May be empty: add the questions later, before freezing."""
     mix_servers: list[str] | None = None
     """Node names in mixing order. Omitted: the default nodes."""
-    open_to_all: bool = False
+    open_to: list[str] = []
+    """Login methods whose every user may vote (joining the roll themselves)."""
 
 
 class ElectionPatch(BaseModel):
@@ -146,8 +147,9 @@ class ElectionPatch(BaseModel):
     mix_servers: list[str] | None = None
     use_default_mix_servers: bool = False
     """Replace the mix chain with the default nodes."""
-    open_to_all: bool | None = None
-    """Every registered account may vote: they are added to the roll when the election freezes."""
+    open_to: list[str] | None = None
+    """Login methods (``password``, CAS service names) whose every user may vote,
+    besides the roll. They join it themselves, also after the freeze."""
 
 
 class ScheduleIn(BaseModel):
@@ -171,6 +173,8 @@ class VotersIn(BaseModel):
 
 
 class VoterOut(BaseModel):
+    self_enrolled: bool
+    """Joined by logging in (the election is open to their login method)."""
     id: uuid.UUID
     voter_id: str
     """Decimal string, as everywhere in the API (evmlr's ids are 64-bit types)."""
@@ -182,6 +186,7 @@ class VoterOut(BaseModel):
     @classmethod
     def of(cls, v: Voter) -> VoterOut:
         return cls(
+            self_enrolled=v.self_enrolled,
             id=v.id,
             voter_id=str(v.voter_id),
             provider=v.provider,
@@ -278,7 +283,7 @@ class ElectionOut(BaseModel):
     published_at: datetime | None
     opens_at: datetime | None
     closes_at: datetime | None
-    open_to_all: bool
+    open_to: list[str]
     mix_servers: list[MixServerOut]
     questions: list[QuestionOut]
     voter_count: int
@@ -300,7 +305,7 @@ class ElectionOut(BaseModel):
             published_at=e.published_at,
             opens_at=svc_ops.utc(e.opens_at),
             closes_at=svc_ops.utc(e.closes_at),
-            open_to_all=e.open_to_all,
+            open_to=list(e.open_to),
             mix_servers=[
                 MixServerOut(position=m.position, node_id=m.node_id, node=m.node.name) for m in e.mix_servers
             ],
@@ -356,11 +361,11 @@ def list_elections(db: Db, caller: Caller) -> list[ElectionSummary]:
     status_code=status.HTTP_201_CREATED,
     dependencies=[Depends(require_creator)],
 )
-def create_election(body: ElectionIn, db: Db, caller: Caller) -> ElectionOut:
+def create_election(body: ElectionIn, db: Db, caller: Caller, request: Request) -> ElectionOut:
     election = errors(
         lambda: svc_ops.create_election(db, body.title, body.description, body.questions, body.mix_servers)
     )
-    election.open_to_all = body.open_to_all
+    election.open_to = _login_methods(request, body.open_to)
     if caller.account is not None:
         election.managers.append(ElectionManager(account_id=caller.account.id))
     db.commit()
@@ -373,7 +378,9 @@ def get_election(election_id: ManagedId, db: Db) -> ElectionOut:
 
 
 @router.patch("/elections/{election_id}", response_model=ElectionOut)
-def update_election(election_id: ManagedId, body: ElectionPatch, db: Db) -> ElectionOut:
+def update_election(election_id: ManagedId, body: ElectionPatch, db: Db, request: Request) -> ElectionOut:
+    open_to = None if body.open_to is None else _login_methods(request, body.open_to)
+
     def run() -> Election:
         election = svc_ops.get_election(db, election_id, lock=True)
         svc_ops.update_election(
@@ -384,13 +391,26 @@ def update_election(election_id: ManagedId, body: ElectionPatch, db: Db) -> Elec
             questions=body.questions,
             mix_servers=body.mix_servers,
             default_mix_servers=body.use_default_mix_servers,
-            open_to_all=body.open_to_all,
+            open_to=open_to,
         )
         return election
 
     election = errors(run)
     db.commit()
     return ElectionOut.of(db, election)
+
+
+def _providers(request: Request) -> list[str]:
+    return request.app.state.settings.auth_providers
+
+
+def _login_methods(request: Request, names: list[str]) -> list[str]:
+    unknown = sorted(set(names) - set(_providers(request)))
+    if unknown:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, f"no such login method: {', '.join(unknown)}"
+        )
+    return list(dict.fromkeys(names))
 
 
 @router.put("/elections/{election_id}/schedule", response_model=ElectionOut)
@@ -493,12 +513,12 @@ class CsvImportOut(BaseModel):
     response_model=CsvImportOut,
     openapi_extra=_CSV_BODY,
 )
-def add_voters_csv(election_id: ManagedId, text: Csv, db: Db) -> CsvImportOut:
+def add_voters_csv(election_id: ManagedId, text: Csv, db: Db, request: Request) -> CsvImportOut:
     """Adds voters from CSV (DRAFT only): ``identity,email,display_name`` rows, optional header."""
 
     def run() -> CsvImportOut:
         election = svc_ops.get_election(db, election_id, lock=True)
-        entries = rolls.parse_voters(text)
+        entries = rolls.parse_voters(text, _providers(request))
         before = len(election.voters)
         svc_ops.add_voters(db, election, entries)
         return CsvImportOut(rows=len(entries), added=len(election.voters) - before)
@@ -520,7 +540,7 @@ def _action(db: Db, election_id: uuid.UUID, op: Callable[[Election], Any]) -> tu
 
 @router.post("/elections/{election_id}/freeze", response_model=ElectionOut)
 def freeze(election_id: ManagedId, db: Db, queue: Queue) -> ElectionOut:
-    election, _ = _action(db, election_id, lambda e: svc_ops.freeze(db, e))
+    election, _ = _action(db, election_id, svc_ops.freeze)
     queue.keygen(election.id)
     return ElectionOut.of(db, election)
 
@@ -591,10 +611,12 @@ def list_managers(election_id: ManagedId, db: Db) -> list[str]:
 
 
 @router.put("/elections/{election_id}/managers", response_model=list[str])
-def set_managers(election_id: ManagedId, body: ManagersIn, db: Db) -> list[str]:
+def set_managers(election_id: ManagedId, body: ManagersIn, db: Db, request: Request) -> list[str]:
     """Replaces the election's managers. Allowed in any state: it changes who administers, not the vote."""
     election = errors(lambda: svc_ops.get_election(db, election_id, lock=True))
-    accounts = errors(lambda: _accounts(db, [rolls.parse_identity(key) for key in body.managers]))
+    accounts = errors(
+        lambda: _accounts(db, [rolls.parse_identity(key, _providers(request)) for key in body.managers])
+    )
     if not accounts:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "an election needs at least one manager")
     election.managers.clear()
@@ -609,10 +631,10 @@ def set_managers(election_id: ManagedId, body: ManagersIn, db: Db) -> list[str]:
     response_model=list[str],
     openapi_extra=_CSV_BODY,
 )
-def add_managers_csv(election_id: ManagedId, text: Csv, db: Db) -> list[str]:
+def add_managers_csv(election_id: ManagedId, text: Csv, db: Db, request: Request) -> list[str]:
     """Adds managers from CSV, one identity per row (optional ``identity`` header). Returns them all."""
     election = errors(lambda: svc_ops.get_election(db, election_id, lock=True))
-    accounts = errors(lambda: _accounts(db, rolls.parse_identities(text)))
+    accounts = errors(lambda: _accounts(db, rolls.parse_identities(text, _providers(request))))
     have = {m.account_id for m in election.managers}
     election.managers.extend(ElectionManager(account_id=a.id) for a in accounts if a.id not in have)
     db.commit()

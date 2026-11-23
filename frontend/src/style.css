@@ -84,3 +84,5 @@ th { font-weight: 600; font-size: 0.9em; color: var(--muted); }
 .bar { height: 0.5rem; background: var(--accent); border-radius: 999px; }
 .answers { margin: 0.4rem 0; padding-left: 1.5rem; }
 .answers li { padding: 0.15rem 0; }
+fieldset.plain { border: 0; padding: 0; margin: 0; }
+fieldset.plain legend { padding: 0; margin-bottom: 0.2rem; }

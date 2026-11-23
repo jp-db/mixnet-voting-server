@@ -145,6 +145,11 @@ def settings(tmp_path: Path, database_url: str) -> Settings:
         database_url=database_url,
         blob_dir=tmp_path / "blobs",
         admin_token=ADMIN_TOKEN,
+        auth_providers=["password", "cas", "ufsc"],
+        cas_servers=[
+            {"name": "cas", "label": "Example CAS", "url": "https://cas.example.edu/cas/"},
+            {"name": "ufsc", "label": "UFSC", "url": "https://sso.example.br/cas/"},
+        ],
         mixnet_nodes=[{"name": n, "url": f"http://{n}", "token": node_token(n)} for n in NODE_NAMES],
     )
 
@@ -185,6 +190,10 @@ def web(api: TestClient) -> TestClient:
     @app.post("/test/login/{external_id}")
     def _login(external_id: str, request: Request) -> None:
         log_in(request, Identity(provider="password", external_id=external_id))
+
+    @app.post("/test/login-as/{provider}/{external_id}")
+    def _login_as(provider: str, external_id: str, request: Request) -> None:
+        log_in(request, Identity(provider=provider, external_id=external_id))
 
     @app.post("/test/logout")
     def _logout(request: Request) -> None:

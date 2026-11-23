@@ -2,8 +2,8 @@
 
     ``GET  /auth/providers``        the enabled login methods, in display order
     ``POST /auth/password/login``   JSON ``{username, password}``
-    ``GET  /auth/cas/login``        redirects to the CAS server (``?next=/path`` to come back to)
-    ``GET  /auth/cas/callback``     where CAS sends the browser back with a ticket
+    ``GET  /auth/cas/{name}/login``     redirects to CAS service ``name`` (``?next=/path`` to come back to)
+    ``GET  /auth/cas/{name}/callback``  where CAS sends the browser back with a ticket
     ``GET  /auth/me``               the logged-in identity and its account's roles
     ``POST /auth/logout``
 
@@ -30,8 +30,6 @@ from .deps import Db
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-_LABELS = {"password": "Username and password", "cas": "Single sign-on (CAS)"}
-
 
 def safe_next(path: str | None) -> str:
     """Only paths on this site: no open redirect through ``next``."""
@@ -53,17 +51,21 @@ def _finish_login(request: Request, svc: Services, identity: Identity) -> None:
 
 class ProviderOut(BaseModel):
     name: str
+    kind: str
+    """``password`` or ``cas``."""
     label: str
     login_url: str
 
 
 @router.get("/providers", response_model=list[ProviderOut])
 def providers(request: Request) -> list[ProviderOut]:
-    urls = {"password": "/auth/password/login", "cas": "/auth/cas/login"}
-    return [
-        ProviderOut(name=n, label=_LABELS[n], login_url=urls[n])
-        for n in request.app.state.settings.auth_providers
-    ]
+    settings = request.app.state.settings
+    out = []
+    for n in settings.auth_providers:
+        kind = "password" if n == "password" else "cas"
+        url = "/auth/password/login" if kind == "password" else f"/auth/cas/{n}/login"
+        out.append(ProviderOut(name=n, kind=kind, label=settings.provider_label(n), login_url=url))
+    return out
 
 
 class PasswordLogin(BaseModel):
@@ -82,21 +84,27 @@ def password_login(body: PasswordLogin, request: Request) -> None:
     _finish_login(request, svc, identity)
 
 
-def _cas(request: Request) -> CASProvider:
-    _enabled(request, "cas")
-    return request.app.state.cas
+def _cas(request: Request, name: str) -> CASProvider:
+    provider = request.app.state.cas.get(name)
+    if provider is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"no CAS service {name}")
+    _enabled(request, name)
+    return provider
 
 
-@router.get("/cas/login")
-def cas_login(request: Request, next: Annotated[str | None, Query()] = None) -> RedirectResponse:
-    return RedirectResponse(_cas(request).login_url(safe_next(next)), status.HTTP_303_SEE_OTHER)
+@router.get("/cas/{name}/login")
+def cas_login(request: Request, name: str, next: Annotated[str | None, Query()] = None) -> RedirectResponse:
+    return RedirectResponse(_cas(request, name).login_url(safe_next(next)), status.HTTP_303_SEE_OTHER)
 
 
-@router.get("/cas/callback")
+@router.get("/cas/{name}/callback")
 async def cas_callback(
-    request: Request, ticket: Annotated[str, Query(min_length=1, max_length=2000)], next: str | None = None
+    request: Request,
+    name: str,
+    ticket: Annotated[str, Query(min_length=1, max_length=2000)],
+    next: str | None = None,
 ) -> RedirectResponse:
-    provider = _cas(request)
+    provider = _cas(request, name)
     path = safe_next(next)
     identity = await run_in_threadpool(provider.validate, ticket, path)
     if identity is None:

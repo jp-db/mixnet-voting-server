@@ -19,6 +19,17 @@ class DefaultMixnetNode(BaseModel):
     """The node's ``MIXNET_NODE_API_TOKEN``."""
 
 
+class CasServer(BaseModel):
+    """A CAS service people can log in with. Its ``name`` is the provider of the
+    identities it vouches for (``ufsc:jdoe``), so keep it stable."""
+
+    name: str = Field(pattern=r"^[a-z][a-z0-9-]{0,49}$")
+    label: str = Field(min_length=1, max_length=100)
+    """What the login page and the election pages show, e.g. "UFSC (idUFSC)"."""
+    url: str = Field(pattern=r"^https?://")
+    """Base URL of the CAS server, e.g. ``https://cas.example.edu/cas/``."""
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="BALLOT_BOX_", env_file=".env", extra="ignore")
 
@@ -35,9 +46,11 @@ class Settings(BaseSettings):
     """Base URL voters reach; used for CAS/OIDC callback URLs."""
 
     auth_providers: list[str] = ["password"]
-    """Enabled login methods, in display order: ``password``, ``cas``."""
+    """Enabled login methods, in display order: ``password`` and the names of CAS services."""
+    cas_servers: list[CasServer] = []
+    """The CAS services, as JSON: ``[{"name": "ufsc", "label": "UFSC", "url": "https://..."}]``."""
     cas_server_url: str | None = None
-    """Base URL of the CAS server (e.g. ``https://cas.example.edu/cas/``), for ``cas``."""
+    """Shorthand for one CAS service named ``cas``."""
 
     admin_identities: list[str] = []
     """Identities made administrators when they log in, as ``provider:external_id``
@@ -62,13 +75,33 @@ class Settings(BaseSettings):
     schedule_seconds: float = Field(default=15.0, gt=0)
     """How often the scheduler (``celery beat``) opens and closes elections whose time has come."""
 
+    @property
+    def cas_services(self) -> dict[str, CasServer]:
+        """Every CAS service by name, ``cas_server_url`` included."""
+        out = {c.name: c for c in self.cas_servers}
+        if self.cas_server_url:
+            out.setdefault(
+                "cas", CasServer(name="cas", label="Single sign-on (CAS)", url=self.cas_server_url)
+            )
+        return out
+
+    def provider_label(self, name: str) -> str:
+        if name == "password":
+            return "Username and password"
+        cas = self.cas_services.get(name)
+        return cas.label if cas else name
+
     @model_validator(mode="after")
     def _check_providers(self) -> Settings:
-        unknown = set(self.auth_providers) - {"password", "cas"}
+        names = [c.name for c in self.cas_servers]
+        if len(set(names)) != len(names) or "password" in names:
+            raise ValueError("CAS service names must be distinct, and not 'password'")
+        unknown = set(self.auth_providers) - {"password", *self.cas_services}
         if unknown:
-            raise ValueError(f"unknown auth providers: {', '.join(sorted(unknown))}")
-        if "cas" in self.auth_providers and not self.cas_server_url:
-            raise ValueError("the cas provider needs cas_server_url")
+            names = ", ".join(sorted(unknown))
+            raise ValueError(
+                f"unknown auth providers: {names} (a CAS one needs cas_servers or cas_server_url)"
+            )
         return self
 
 
